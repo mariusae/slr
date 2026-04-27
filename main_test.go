@@ -33,6 +33,9 @@ func TestParseCommits(t *testing.T) {
 	if commits[1].BodyPrefix != "╷ │  " {
 		t.Fatalf("got prefix %q", commits[1].BodyPrefix)
 	}
+	if commits[1].ExpandPrefix != "╷ │  " {
+		t.Fatalf("got expand prefix %q", commits[1].ExpandPrefix)
+	}
 }
 
 func TestParseCommitsWithAmendedAnnotation(t *testing.T) {
@@ -57,16 +60,61 @@ func TestParseCommitsWithAmendedAnnotation(t *testing.T) {
 
 func TestRenderExpansionBody(t *testing.T) {
 	c := commit{
-		SubjectText: "subject",
-		BodyPrefix:  "│  ",
-		Description: "subject\nbody one\n\nbody two\n",
+		SubjectText:  "subject",
+		BodyPrefix:   "│  ",
+		ExpandPrefix: "│  ",
+		Description:  "subject\nbody one\n\nbody two\n",
 	}
 
 	got := renderExpansionBody(c, 80, md.RenderStyle{})
 	want := []smartlogLine{
+		{raw: "│", plain: "│"},
 		{raw: "│  body one", plain: "│  body one"},
 		{raw: "│", plain: "│"},
 		{raw: "│  body two", plain: "│  body two"},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
+func TestParseCommitsDerivesExpandPrefixFromGraphOnlyLine(t *testing.T) {
+	lines := []string{
+		"o  3c5110e0ee  21 minutes ago  remote/master",
+		"╷",
+		"╷ @  050970ae43  14 seconds ago  meriksen",
+		"╭─╯  Add clap to hyperactor_mesh Cargo test dependencies",
+		"│",
+		"o  05b073be77  Today at 06:01  remote/fbcode/stable",
+	}
+
+	commits := parseCommits(makeSmartlogLines(lines))
+	if len(commits) != 3 {
+		t.Fatalf("got %d commits, want 3", len(commits))
+	}
+	if commits[1].BodyPrefix != "╭─╯  " {
+		t.Fatalf("got body prefix %q", commits[1].BodyPrefix)
+	}
+	if commits[1].ExpandPrefix != "│    " {
+		t.Fatalf("got expand prefix %q, want %q", commits[1].ExpandPrefix, "│    ")
+	}
+}
+
+func TestRenderExpansionBodyUsesExpandPrefix(t *testing.T) {
+	c := commit{
+		SubjectText:  "subject",
+		BodyPrefix:   "╭─╯  ",
+		ExpandPrefix: "│    ",
+		Description:  "subject\nSummary: body one\n\nTest Plan: body two\n",
+	}
+
+	got := renderExpansionBody(c, 80, md.RenderStyle{})
+	want := []smartlogLine{
+		{raw: "│", plain: "│"},
+		{raw: "│    Summary: body one", plain: "│    Summary: body one"},
+		{raw: "│", plain: "│"},
+		{raw: "│    Test Plan: body two", plain: "│    Test Plan: body two"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -117,5 +165,25 @@ func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	}
 	if selected != 4 {
 		t.Fatalf("got selected line %d want 4", selected)
+	}
+}
+
+func TestDisplayRows(t *testing.T) {
+	cases := []struct {
+		line  string
+		width int
+		want  int
+	}{
+		{line: "", width: 10, want: 1},
+		{line: "short", width: 10, want: 1},
+		{line: "1234567890", width: 10, want: 1},
+		{line: "12345678901", width: 10, want: 2},
+		{line: "o  3c5110e0ee  25 minutes ago  remote/master remote/fbcode/stable", width: 40, want: 2},
+	}
+
+	for _, tc := range cases {
+		if got := displayRows(tc.line, tc.width); got != tc.want {
+			t.Fatalf("displayRows(%q, %d) = %d, want %d", tc.line, tc.width, got, tc.want)
+		}
 	}
 }

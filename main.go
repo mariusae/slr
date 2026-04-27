@@ -34,6 +34,7 @@ type commit struct {
 	SubjectLine   int
 	SubjectText   string
 	BodyPrefix    string
+	ExpandPrefix  string
 	BodyLines     []smartlogLine
 	Description   string
 	DescriptionOK bool
@@ -45,14 +46,14 @@ type smartlogLine struct {
 }
 
 type model struct {
-	lines            []smartlogLine
-	commits          []commit
-	selected         int
-	expanded         map[string]bool
-	selectedHash     string
-	lastRenderHeight int
-	selectionStyle   lineStyle
-	markdownStyle    md.RenderStyle
+	lines          []smartlogLine
+	commits        []commit
+	selected       int
+	expanded       map[string]bool
+	selectedHash   string
+	lastRenderRows int
+	selectionStyle lineStyle
+	markdownStyle  md.RenderStyle
 }
 
 type key int
@@ -146,8 +147,8 @@ func runInteractive(m *model) error {
 	top := 0
 
 	for {
-		height, nextTop := render(m, top)
-		m.lastRenderHeight = height
+		rows, nextTop := render(m, top)
+		m.lastRenderRows = rows
 		top = nextTop
 
 		k, err := readKey(reader, fd)
@@ -155,7 +156,7 @@ func runInteractive(m *model) error {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
-			clearRenderArea(m.lastRenderHeight)
+			clearRenderArea(m.lastRenderRows)
 			return err
 		}
 
@@ -264,6 +265,7 @@ func parseCommits(lines []smartlogLine) []commit {
 			commits[i].AnchorLine = lineIndex
 			commits[i].SubjectText = content
 			commits[i].BodyPrefix = prefix
+			commits[i].ExpandPrefix = deriveExpandPrefix(prefix, lines[lineIndex+1:end])
 			break
 		}
 	}
@@ -277,6 +279,52 @@ func splitContentLine(line string) (string, string, bool) {
 		return "", "", false
 	}
 	return match[1], match[2], true
+}
+
+func deriveExpandPrefix(subjectPrefix string, trailing []smartlogLine) string {
+	targetWidth := displayWidth(subjectPrefix)
+	for _, line := range trailing {
+		if line.plain == "" {
+			continue
+		}
+		if _, _, ok := splitContentLine(line.plain); ok {
+			continue
+		}
+		return padPrefixWidth(line.plain, targetWidth)
+	}
+	return padPrefixWidth(normalizeGraphPrefix(subjectPrefix), targetWidth)
+}
+
+func padPrefixWidth(prefix string, targetWidth int) string {
+	width := displayWidth(prefix)
+	if width >= targetWidth {
+		return prefix
+	}
+	return prefix + strings.Repeat(" ", targetWidth-width)
+}
+
+func normalizeGraphPrefix(prefix string) string {
+	graph := strings.TrimRight(prefix, " ")
+	if graph == "" {
+		return prefix
+	}
+
+	var out []rune
+	for _, r := range graph {
+		out = append(out, normalizeGraphRune(r))
+	}
+	return string(out)
+}
+
+func normalizeGraphRune(r rune) rune {
+	switch r {
+	case '│', '╷', '╵', '├', '└', '┌', '╭', '╰':
+		return '│'
+	case ' ', '\t':
+		return r
+	default:
+		return ' '
+	}
 }
 
 func currentCommit(m *model) *commit {
@@ -325,6 +373,10 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 	if c.Description == "" || c.BodyPrefix == "" {
 		return nil
 	}
+	prefix := c.ExpandPrefix
+	if prefix == "" {
+		prefix = deriveExpandPrefix(c.BodyPrefix, nil)
+	}
 
 	source := c.Description
 	if c.SubjectText != "" {
@@ -346,7 +398,7 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 
 	var buf bytes.Buffer
 	if err := md.RenderWithStyle([]byte(source), &buf, width, true, style); err != nil {
-		return prefixPlainBody(c.BodyPrefix, source)
+		return prependBlankLine(prefixPlainBody(prefix, source), prefix)
 	}
 	rendered := normalizeSmartlogOutput(buf.String())
 	if rendered == "" {
@@ -354,13 +406,14 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 	}
 	lines := strings.Split(rendered, "\n")
 	body := make([]smartlogLine, 0, len(lines))
-	blankPrefix := strings.TrimRight(c.BodyPrefix, " ")
+	blankPrefix := strings.TrimRight(prefix, " ")
+	body = append(body, smartlogLine{raw: blankPrefix, plain: blankPrefix})
 	for _, line := range lines {
 		raw := blankPrefix
 		plain := blankPrefix
 		if line != "" {
-			raw = c.BodyPrefix + line
-			plain = c.BodyPrefix + stripControl(line)
+			raw = prefix + line
+			plain = prefix + stripControl(line)
 		}
 		body = append(body, smartlogLine{raw: raw, plain: plain})
 	}
@@ -369,51 +422,71 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 
 func render(m *model, top int) (int, int) {
 	rendered, selectedLine := buildRenderedLines(m)
-	_, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
+	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || termHeight <= 0 {
 		termHeight = 24
+	}
+	if err != nil || termWidth <= 0 {
+		termWidth = 80
 	}
 	maxHeight := termHeight - 1
 	if maxHeight < 5 {
 		maxHeight = termHeight
 	}
 	if maxHeight < 1 {
-		maxHeight = len(rendered)
+		maxHeight = 1
+	}
+
+	lineRows := make([]int, len(rendered))
+	totalRows := 0
+	for i, line := range rendered {
+		lineRows[i] = displayRows(line.plain, termWidth)
+		totalRows += lineRows[i]
 	}
 
 	if selectedLine < top {
 		top = selectedLine
 	}
-	if selectedLine >= top+maxHeight {
-		top = selectedLine - maxHeight + 1
+	for visibleRowsBetween(lineRows, top, selectedLine+1) > maxHeight {
+		top++
 	}
 	if top < 0 {
 		top = 0
 	}
-	if len(rendered) <= maxHeight {
+	if totalRows <= maxHeight {
 		top = 0
 	}
 
-	end := len(rendered)
-	if end-top > maxHeight {
-		end = top + maxHeight
+	end := top
+	usedRows := 0
+	for end < len(rendered) {
+		nextRows := lineRows[end]
+		if usedRows > 0 && usedRows+nextRows > maxHeight {
+			break
+		}
+		usedRows += nextRows
+		end++
 	}
 	view := rendered[top:end]
 
-	clearRenderArea(m.lastRenderHeight)
+	clearRenderArea(m.lastRenderRows)
 	for i, line := range view {
 		absoluteLine := top + i
+		lineEnd := "\r\n"
+		if i == len(view)-1 {
+			lineEnd = ""
+		}
 		if absoluteLine == selectedLine {
 			if m.selectionStyle.start != "" {
-				fmt.Fprintf(os.Stdout, "\r%s%s%s\r\n", m.selectionStyle.start, decorateSelected(line.raw, m.selectionStyle.start), m.selectionStyle.end)
+				fmt.Fprintf(os.Stdout, "\r%s%s%s%s", m.selectionStyle.start, decorateSelected(line.raw, m.selectionStyle.start), m.selectionStyle.end, lineEnd)
 			} else {
-				fmt.Fprintf(os.Stdout, "\r\x1b[1m%s\x1b[0m\r\n", line.raw)
+				fmt.Fprintf(os.Stdout, "\r\x1b[1m%s\x1b[0m%s", line.raw, lineEnd)
 			}
 			continue
 		}
-		fmt.Fprintf(os.Stdout, "\r%s\r\n", line.raw)
+		fmt.Fprintf(os.Stdout, "\r%s%s", line.raw, lineEnd)
 	}
-	return len(view), top
+	return usedRows, top
 }
 
 func buildRenderedLines(m *model) ([]smartlogLine, int) {
@@ -492,7 +565,7 @@ func refreshModel(m *model) error {
 
 func suspendAndRun(m *model, origState *term.State, fn func() error) error {
 	fd := int(os.Stdin.Fd())
-	clearRenderArea(m.lastRenderHeight)
+	clearRenderArea(m.lastRenderRows)
 	showCursor()
 	if err := term.Restore(fd, origState); err != nil {
 		return err
@@ -510,7 +583,10 @@ func clearRenderArea(height int) {
 	if height <= 0 {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "\x1b[%dA\r\x1b[J", height)
+	if height > 1 {
+		fmt.Fprintf(os.Stdout, "\x1b[%dA", height-1)
+	}
+	fmt.Fprint(os.Stdout, "\r\x1b[J")
 }
 
 func hideCursor() {
@@ -698,6 +774,14 @@ func prefixPlainBody(prefix, source string) []smartlogLine {
 	return trimTrailingBlankLines(body, blankPrefix)
 }
 
+func prependBlankLine(lines []smartlogLine, prefix string) []smartlogLine {
+	blankPrefix := strings.TrimRight(prefix, " ")
+	body := make([]smartlogLine, 0, len(lines)+1)
+	body = append(body, smartlogLine{raw: blankPrefix, plain: blankPrefix})
+	body = append(body, lines...)
+	return trimTrailingBlankLines(body, blankPrefix)
+}
+
 func trimTrailingBlankLines(lines []smartlogLine, blankPrefix string) []smartlogLine {
 	for len(lines) > 0 && lines[len(lines)-1].plain == blankPrefix {
 		lines = lines[:len(lines)-1]
@@ -715,6 +799,31 @@ func terminalWidth() int {
 
 func displayWidth(s string) int {
 	return len([]rune(stripControl(s)))
+}
+
+func displayRows(s string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	lineWidth := displayWidth(s)
+	if lineWidth == 0 {
+		return 1
+	}
+	return (lineWidth-1)/width + 1
+}
+
+func visibleRowsBetween(lineRows []int, start, end int) int {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(lineRows) {
+		end = len(lineRows)
+	}
+	total := 0
+	for i := start; i < end; i++ {
+		total += lineRows[i]
+	}
+	return total
 }
 
 func expansionRenderWidth(prefix string) int {
