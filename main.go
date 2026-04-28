@@ -199,15 +199,13 @@ func runInteractive(m *model) error {
 			top = 0
 		case keyEnter:
 			hash := currentCommit(m).Hash
-			if err := suspendAndRun(m, origState, func() error {
-				return runAttached("sl", "goto", hash)
-			}); err != nil {
+			if err := runQuiet("sl", "goto", hash); err != nil {
 				return err
 			}
 			if err := refreshModel(m); err != nil {
 				return err
 			}
-			renderWithoutSelection(m, 0)
+			renderWithoutSelection(m, top)
 			return nil
 		case keyQuit, keyEscape:
 			renderWithoutSelection(m, top)
@@ -456,14 +454,14 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 }
 
 func render(m *model, top int) (int, int) {
-	return renderWithSelection(m, top, true)
+	return renderWithSelection(m, top, true, false)
 }
 
 func renderWithoutSelection(m *model, top int) (int, int) {
-	return renderWithSelection(m, top, false)
+	return renderWithSelection(m, top, false, true)
 }
 
-func renderWithSelection(m *model, top int, highlightSelection bool) (int, int) {
+func renderWithSelection(m *model, top int, highlightSelection bool, preserveViewport bool) (int, int) {
 	rendered, selectedLine := buildRenderedLines(m)
 	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || termHeight <= 0 {
@@ -481,24 +479,11 @@ func renderWithSelection(m *model, top int, highlightSelection bool) (int, int) 
 	}
 
 	lineRows := make([]int, len(rendered))
-	totalRows := 0
 	for i, line := range rendered {
 		lineRows[i] = displayRows(line.plain, termWidth)
-		totalRows += lineRows[i]
 	}
 
-	if selectedLine < top {
-		top = selectedLine
-	}
-	for visibleRowsBetween(lineRows, top, selectedLine+1) > maxHeight {
-		top++
-	}
-	if top < 0 {
-		top = 0
-	}
-	if totalRows <= maxHeight {
-		top = 0
-	}
+	top = adjustViewportTop(top, selectedLine, lineRows, maxHeight, preserveViewport)
 
 	end := top
 	usedRows := 0
@@ -522,6 +507,36 @@ func renderWithSelection(m *model, top int, highlightSelection bool) (int, int) 
 		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, absoluteLine == selectedLine && highlightSelection, m.selectionStyle), lineEnd)
 	}
 	return usedRows, top
+}
+
+func adjustViewportTop(top, selectedLine int, lineRows []int, maxHeight int, preserveViewport bool) int {
+	if top < 0 {
+		top = 0
+	}
+	if len(lineRows) == 0 {
+		return 0
+	}
+
+	totalRows := 0
+	for _, rows := range lineRows {
+		totalRows += rows
+	}
+	if totalRows <= maxHeight {
+		return 0
+	}
+	if top >= len(lineRows) {
+		top = len(lineRows) - 1
+	}
+	if preserveViewport {
+		return top
+	}
+	if selectedLine < top {
+		top = selectedLine
+	}
+	for visibleRowsBetween(lineRows, top, selectedLine+1) > maxHeight {
+		top++
+	}
+	return top
 }
 
 func buildRenderedLines(m *model) ([]smartlogLine, int) {
@@ -748,6 +763,26 @@ func runAttached(name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func runQuiet(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stripControlForError(stderr.String()))
+		if msg == "" {
+			msg = strings.TrimSpace(stripControlForError(stdout.String()))
+		}
+		if msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 func exitWithError(err error) {

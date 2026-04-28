@@ -193,6 +193,20 @@ func TestFormatRenderedLine(t *testing.T) {
 	}
 }
 
+func TestAdjustViewportTopPreservesViewport(t *testing.T) {
+	lineRows := []int{1, 1, 1, 1, 1, 1}
+	if got := adjustViewportTop(3, 0, lineRows, 3, true); got != 3 {
+		t.Fatalf("got %d want %d", got, 3)
+	}
+}
+
+func TestAdjustViewportTopTracksSelection(t *testing.T) {
+	lineRows := []int{1, 1, 1, 1, 1, 1}
+	if got := adjustViewportTop(3, 0, lineRows, 3, false); got != 0 {
+		t.Fatalf("got %d want %d", got, 0)
+	}
+}
+
 func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	m := &model{
 		lines: makeSmartlogLines([]string{
