@@ -153,6 +153,7 @@ func runInteractive(m *model) error {
 		k, err := readKey(reader, fd)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				renderWithoutSelection(m, top)
 				return nil
 			}
 			clearRenderArea(m.lastRenderRows)
@@ -198,10 +199,18 @@ func runInteractive(m *model) error {
 			top = 0
 		case keyEnter:
 			hash := currentCommit(m).Hash
-			showCursor()
-			term.Restore(fd, origState)
-			return runAttached("sl", "goto", hash)
+			if err := suspendAndRun(m, origState, func() error {
+				return runAttached("sl", "goto", hash)
+			}); err != nil {
+				return err
+			}
+			if err := refreshModel(m); err != nil {
+				return err
+			}
+			renderWithoutSelection(m, 0)
+			return nil
 		case keyQuit, keyEscape:
+			renderWithoutSelection(m, top)
 			return nil
 		}
 	}
@@ -447,6 +456,14 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 }
 
 func render(m *model, top int) (int, int) {
+	return renderWithSelection(m, top, true)
+}
+
+func renderWithoutSelection(m *model, top int) (int, int) {
+	return renderWithSelection(m, top, false)
+}
+
+func renderWithSelection(m *model, top int, highlightSelection bool) (int, int) {
 	rendered, selectedLine := buildRenderedLines(m)
 	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || termHeight <= 0 {
@@ -502,15 +519,7 @@ func render(m *model, top int) (int, int) {
 		if i == len(view)-1 {
 			lineEnd = ""
 		}
-		if absoluteLine == selectedLine {
-			if m.selectionStyle.start != "" {
-				fmt.Fprintf(os.Stdout, "\r%s%s%s%s", m.selectionStyle.start, decorateSelected(line.raw, m.selectionStyle.start), m.selectionStyle.end, lineEnd)
-			} else {
-				fmt.Fprintf(os.Stdout, "\r\x1b[1m%s\x1b[0m%s", line.raw, lineEnd)
-			}
-			continue
-		}
-		fmt.Fprintf(os.Stdout, "\r%s%s", line.raw, lineEnd)
+		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, absoluteLine == selectedLine && highlightSelection, m.selectionStyle), lineEnd)
 	}
 	return usedRows, top
 }
@@ -778,6 +787,16 @@ func decorateSelected(raw string, styleStart string) string {
 	raw = strings.ReplaceAll(raw, "\x1b[0m", "\x1b[0m"+styleStart)
 	raw = strings.ReplaceAll(raw, "\x1b[m", "\x1b[m"+styleStart)
 	return raw
+}
+
+func formatRenderedLine(raw string, selected bool, style lineStyle) string {
+	if !selected {
+		return raw
+	}
+	if style.start != "" {
+		return style.start + decorateSelected(raw, style.start) + style.end
+	}
+	return "\x1b[1m" + raw + "\x1b[0m"
 }
 
 func shellSingleQuote(s string) string {

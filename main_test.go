@@ -178,6 +178,21 @@ func TestExpansionRenderWidthPrefersExpandPrefix(t *testing.T) {
 	}
 }
 
+func TestFormatRenderedLine(t *testing.T) {
+	if got := formatRenderedLine("plain", false, lineStyle{}); got != "plain" {
+		t.Fatalf("got %q want %q", got, "plain")
+	}
+
+	if got := formatRenderedLine("selected", true, lineStyle{}); got != "\x1b[1mselected\x1b[0m" {
+		t.Fatalf("got %q", got)
+	}
+
+	style := lineStyle{start: "\x1b[41m", end: "\x1b[0m"}
+	if got := formatRenderedLine("selected", true, style); got != "\x1b[41mselected\x1b[0m" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	m := &model{
 		lines: makeSmartlogLines([]string{
