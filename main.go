@@ -22,7 +22,6 @@ import (
 const revset = "draft() & ((::.) + (.::))"
 
 var headerRe = regexp.MustCompile(`^([ \t│╷╵╶╴─├└┌┐┘╭╮╯╰~]*)?([@ox])\s{2}([0-9a-f]{10,40})(?:\s+.*)?$`)
-var contentRe = regexp.MustCompile(`^(.*?  )(\S.*)$`)
 var ansiCSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 var oscRe = regexp.MustCompile(`\x1b\].*?(\x07|\x1b\\)`)
 
@@ -274,11 +273,38 @@ func parseCommits(lines []smartlogLine) []commit {
 }
 
 func splitContentLine(line string) (string, string, bool) {
-	match := contentRe.FindStringSubmatch(line)
-	if match == nil {
-		return "", "", false
+	for i, r := range line {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		if i < 2 || line[i-2:i] != "  " {
+			continue
+		}
+		prefix := line[:i]
+		if !containsGraphRune(prefix) {
+			continue
+		}
+		return prefix, line[i:], true
 	}
-	return match[1], match[2], true
+	return "", "", false
+}
+
+func containsGraphRune(s string) bool {
+	for _, r := range s {
+		if isGraphRune(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGraphRune(r rune) bool {
+	switch r {
+	case '│', '╷', '╵', '╶', '╴', '─', '├', '└', '┌', '┐', '┘', '╭', '╮', '╯', '╰', '~':
+		return true
+	default:
+		return false
+	}
 }
 
 func deriveExpandPrefix(subjectPrefix string, trailing []smartlogLine) string {
@@ -317,10 +343,10 @@ func normalizeGraphPrefix(prefix string) string {
 }
 
 func normalizeGraphRune(r rune) rune {
-	switch r {
-	case '│', '╷', '╵', '├', '└', '┌', '╭', '╰':
+	switch {
+	case isGraphRune(r):
 		return '│'
-	case ' ', '\t':
+	case r == ' ', r == '\t':
 		return r
 	default:
 		return ' '
@@ -345,7 +371,7 @@ func toggleExpanded(m *model) error {
 		c.Description = desc
 		c.DescriptionOK = true
 	}
-	c.BodyLines = renderExpansionBody(*c, expansionRenderWidth(c.BodyPrefix), m.markdownStyle)
+	c.BodyLines = renderExpansionBody(*c, expansionRenderWidth(*c), m.markdownStyle)
 	m.commits[m.selected] = *c
 	if len(c.BodyLines) == 0 {
 		return nil
@@ -547,7 +573,7 @@ func refreshModel(m *model) error {
 			commits[i].Description = old.Description
 			commits[i].DescriptionOK = old.DescriptionOK
 			if commits[i].DescriptionOK {
-				commits[i].BodyLines = renderExpansionBody(commits[i], expansionRenderWidth(commits[i].BodyPrefix), m.markdownStyle)
+				commits[i].BodyLines = renderExpansionBody(commits[i], expansionRenderWidth(commits[i]), m.markdownStyle)
 			}
 			if m.expanded[commits[i].Hash] && len(commits[i].BodyLines) > 0 {
 				newExpanded[commits[i].Hash] = true
@@ -826,7 +852,11 @@ func visibleRowsBetween(lineRows []int, start, end int) int {
 	return total
 }
 
-func expansionRenderWidth(prefix string) int {
+func expansionRenderWidth(c commit) int {
+	prefix := c.ExpandPrefix
+	if prefix == "" {
+		prefix = c.BodyPrefix
+	}
 	width := terminalWidth() - displayWidth(prefix)
 	if width > 100 {
 		width = 100

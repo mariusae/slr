@@ -79,6 +79,19 @@ func TestRenderExpansionBody(t *testing.T) {
 	}
 }
 
+func TestSplitContentLinePreservesIndentedGraphPrefix(t *testing.T) {
+	prefix, content, ok := splitContentLine("  │  [hyperactor] export true id/addr/ref names")
+	if !ok {
+		t.Fatal("expected content line")
+	}
+	if prefix != "  │  " {
+		t.Fatalf("got prefix %q want %q", prefix, "  │  ")
+	}
+	if content != "[hyperactor] export true id/addr/ref names" {
+		t.Fatalf("got content %q", content)
+	}
+}
+
 func TestParseCommitsDerivesExpandPrefixFromGraphOnlyLine(t *testing.T) {
 	lines := []string{
 		"o  3c5110e0ee  21 minutes ago  remote/master",
@@ -119,6 +132,49 @@ func TestRenderExpansionBodyUsesExpandPrefix(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
+func TestRenderExpansionBodyWrapsWithinExpandPrefix(t *testing.T) {
+	c := commit{
+		SubjectText:  "subject",
+		BodyPrefix:   "╭─╯  ",
+		ExpandPrefix: "│    ",
+		Description:  "subject\nSummary: Remove the remaining root-level hyperactor type renames so the crate exports the real addr, id, and ref_ names directly, and retarget downstream users to those true names. This is a mechanical rename only.\n",
+	}
+
+	got := renderExpansionBody(c, 60, md.RenderStyle{})
+	if len(got) < 3 {
+		t.Fatalf("got %#v, want wrapped output", got)
+	}
+
+	blankPrefix := "│"
+	for _, line := range got {
+		if line.plain == blankPrefix {
+			continue
+		}
+		if len(line.plain) <= len(c.ExpandPrefix) || line.plain[:len(c.ExpandPrefix)] != c.ExpandPrefix {
+			t.Fatalf("line %q missing expand prefix %q", line.plain, c.ExpandPrefix)
+		}
+	}
+}
+
+func TestExpansionRenderWidthPrefersExpandPrefix(t *testing.T) {
+	c := commit{
+		BodyPrefix:   "│  ",
+		ExpandPrefix: "│    ",
+	}
+
+	want := terminalWidth() - displayWidth(c.ExpandPrefix)
+	if want > 100 {
+		want = 100
+	}
+	if want < 20 {
+		want = 20
+	}
+
+	if got := expansionRenderWidth(c); got != want {
+		t.Fatalf("got %d want %d", got, want)
 	}
 }
 
