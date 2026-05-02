@@ -17,6 +17,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - Expanded descriptions rendered as markdown via `github.com/mariusae/md`
 - `Ctrl-G` to run `sl metaedit -r <hash>`
 - `Ctrl-D` to run `mdiff -c <hash>`
+- `Ctrl-R` to refresh the smartlog view
 - `q` or `Esc` to exit while leaving the rendered content on screen
 
 ## Build

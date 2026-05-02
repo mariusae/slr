@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mariusae/md"
@@ -190,6 +192,16 @@ func TestFormatRenderedLine(t *testing.T) {
 	style := lineStyle{start: "\x1b[41m", end: "\x1b[0m"}
 	if got := formatRenderedLine("selected", true, style); got != "\x1b[41mselected\x1b[0m" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestReadKeyMapsCtrlR(t *testing.T) {
+	got, err := readKey(bufio.NewReader(strings.NewReader("\x12")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != keyCtrlR {
+		t.Fatalf("got %v want %v", got, keyCtrlR)
 	}
 }
 

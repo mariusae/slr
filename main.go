@@ -25,6 +25,8 @@ var headerRe = regexp.MustCompile(`^([ \t│╷╵╶╴─├└┌┐┘╭╮
 var ansiCSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 var oscRe = regexp.MustCompile(`\x1b\].*?(\x07|\x1b\\)`)
 
+var progressFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 type commit struct {
 	Hash          string
 	Marker        string
@@ -65,6 +67,7 @@ const (
 	keySpace
 	keyCtrlG
 	keyCtrlD
+	keyCtrlR
 	keyEscape
 	keyQuit
 )
@@ -78,6 +81,11 @@ type rgb struct {
 type lineStyle struct {
 	start string
 	end   string
+}
+
+type smartlogFetchResult struct {
+	lines []string
+	err   error
 }
 
 func main() {
@@ -105,7 +113,7 @@ func main() {
 }
 
 func newModel() (*model, error) {
-	rawLines, err := fetchSmartlog()
+	rawLines, err := fetchSmartlogWithProgress("loading")
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +205,11 @@ func runInteractive(m *model) error {
 				return err
 			}
 			top = 0
+		case keyCtrlR:
+			if err := refreshModel(m); err != nil {
+				return err
+			}
+			top = 0
 		case keyEnter:
 			hash := currentCommit(m).Hash
 			if err := runQuiet("sl", "goto", hash); err != nil {
@@ -231,6 +244,42 @@ func fetchSmartlog() ([]string, error) {
 		return []string{}, nil
 	}
 	return strings.Split(text, "\n"), nil
+}
+
+func fetchSmartlogWithProgress(label string) ([]string, error) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fetchSmartlog()
+	}
+
+	results := make(chan smartlogFetchResult, 1)
+	go func() {
+		lines, err := fetchSmartlog()
+		results <- smartlogFetchResult{lines: lines, err: err}
+	}()
+
+	ticker := time.NewTicker(80 * time.Millisecond)
+	defer ticker.Stop()
+
+	frame := 0
+	renderProgressFrame(label, frame)
+	for {
+		select {
+		case result := <-results:
+			clearProgressFrame()
+			return result.lines, result.err
+		case <-ticker.C:
+			frame++
+			renderProgressFrame(label, frame)
+		}
+	}
+}
+
+func renderProgressFrame(label string, frame int) {
+	fmt.Fprintf(os.Stdout, "\r\x1b[K%s %s", progressFrames[frame%len(progressFrames)], label)
+}
+
+func clearProgressFrame() {
+	fmt.Fprint(os.Stdout, "\r\x1b[K")
 }
 
 func printPlainSmartlog() error {
@@ -564,7 +613,10 @@ func buildRenderedLines(m *model) ([]smartlogLine, int) {
 }
 
 func refreshModel(m *model) error {
-	rawLines, err := fetchSmartlog()
+	clearRenderArea(m.lastRenderRows)
+	m.lastRenderRows = 0
+
+	rawLines, err := fetchSmartlogWithProgress("refreshing")
 	if err != nil {
 		return err
 	}
@@ -616,6 +668,7 @@ func refreshModel(m *model) error {
 func suspendAndRun(m *model, origState *term.State, fn func() error) error {
 	fd := int(os.Stdin.Fd())
 	clearRenderArea(m.lastRenderRows)
+	m.lastRenderRows = 0
 	showCursor()
 	if err := term.Restore(fd, origState); err != nil {
 		return err
@@ -663,6 +716,8 @@ func readKey(reader *bufio.Reader, fd int) (key, error) {
 		return keyCtrlD, nil
 	case 0x07:
 		return keyCtrlG, nil
+	case 0x12:
+		return keyCtrlR, nil
 	case 0x1b:
 		return readEscape(reader, fd)
 	default:
