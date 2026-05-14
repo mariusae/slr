@@ -29,6 +29,9 @@ func TestParseCommits(t *testing.T) {
 	if commits[1].Hash != "a370877256" {
 		t.Fatalf("got hash %q", commits[1].Hash)
 	}
+	if commits[2].DiffID != "D101700572" {
+		t.Fatalf("got diff ID %q", commits[2].DiffID)
+	}
 	if commits[1].SubjectLine != 3 {
 		t.Fatalf("got subject line %d, want 3", commits[1].SubjectLine)
 	}
@@ -262,6 +265,99 @@ func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	}
 	if selected != 4 {
 		t.Fatalf("got selected line %d want 4", selected)
+	}
+}
+
+func TestBuildRenderedLinesShowsPhabStatus(t *testing.T) {
+	m := &model{
+		lines: makeSmartlogLines([]string{
+			"@  aaaaaaaaaa  now  D123",
+			"│  subject",
+		}),
+		commits: []commit{
+			{
+				Hash:       "aaaaaaaaaa",
+				HeaderLine: 0,
+				AnchorLine: 0,
+				DiffID:     "D123",
+			},
+		},
+		expanded:     map[string]bool{},
+		phabStatuses: map[string]string{"D123": "landed"},
+	}
+
+	got, _ := buildRenderedLines(m)
+	if got[0].plain != "@  aaaaaaaaaa  now  D123  landed" {
+		t.Fatalf("got %q", got[0].plain)
+	}
+}
+
+func TestBuildRenderedLinesShowsPendingPhabSpinner(t *testing.T) {
+	m := &model{
+		lines: makeSmartlogLines([]string{
+			"@  aaaaaaaaaa  now  D123",
+			"│  subject",
+		}),
+		commits: []commit{
+			{
+				Hash:       "aaaaaaaaaa",
+				HeaderLine: 0,
+				AnchorLine: 0,
+				DiffID:     "D123",
+			},
+		},
+		expanded:      map[string]bool{},
+		phabPending:   map[string]bool{"D123": true},
+		progressFrame: 1,
+	}
+
+	got, _ := buildRenderedLines(m)
+	if got[0].plain != "@  aaaaaaaaaa  now  D123  ⠙" {
+		t.Fatalf("got %q", got[0].plain)
+	}
+}
+
+func TestBuildRenderedLinesCanHidePendingPhabSpinner(t *testing.T) {
+	m := &model{
+		lines: makeSmartlogLines([]string{
+			"@  aaaaaaaaaa  now  D123",
+			"│  subject",
+		}),
+		commits: []commit{
+			{
+				Hash:       "aaaaaaaaaa",
+				HeaderLine: 0,
+				AnchorLine: 0,
+				DiffID:     "D123",
+			},
+		},
+		expanded:      map[string]bool{},
+		phabPending:   map[string]bool{"D123": true},
+		progressFrame: 1,
+	}
+
+	got, _ := buildRenderedLinesWithPending(m, false)
+	if got[0].plain != "@  aaaaaaaaaa  now  D123" {
+		t.Fatalf("got %q", got[0].plain)
+	}
+}
+
+func TestPhabStatusFromMapPrefersLanded(t *testing.T) {
+	got := phabStatusFromMap(map[string]any{
+		"status":    "Closed",
+		"is_landed": "true",
+	})
+	if got != "landed" {
+		t.Fatalf("got %q want landed", got)
+	}
+}
+
+func TestPhabStatusFromMapFallsBackToHumanStatus(t *testing.T) {
+	got := phabStatusFromMap(map[string]any{
+		"status": "NEEDS_REVIEW",
+	})
+	if got != "needs review" {
+		t.Fatalf("got %q want needs review", got)
 	}
 }
 

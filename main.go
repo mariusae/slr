@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +24,7 @@ import (
 const revset = "draft() & ((::.) + (.::))"
 
 var headerRe = regexp.MustCompile(`^([ \t│╷╵╶╴─├└┌┐┘╭╮╯╰~]*)?([@ox])\s{2}([0-9a-f]{10,40})(?:\s+.*)?$`)
+var diffIDRe = regexp.MustCompile(`\bD[0-9]+\b`)
 var ansiCSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 var oscRe = regexp.MustCompile(`\x1b\].*?(\x07|\x1b\\)`)
 
@@ -33,6 +36,7 @@ type commit struct {
 	HeaderLine    int
 	AnchorLine    int
 	SubjectLine   int
+	DiffID        string
 	SubjectText   string
 	BodyPrefix    string
 	ExpandPrefix  string
@@ -55,6 +59,10 @@ type model struct {
 	lastRenderRows int
 	selectionStyle lineStyle
 	markdownStyle  md.RenderStyle
+	phabStatuses   map[string]string
+	phabPending    map[string]bool
+	phabResults    chan phabStatusResult
+	progressFrame  int
 }
 
 type key int
@@ -86,6 +94,12 @@ type lineStyle struct {
 type smartlogFetchResult struct {
 	lines []string
 	err   error
+}
+
+type phabStatusResult struct {
+	diffID string
+	status string
+	err    error
 }
 
 func main() {
@@ -134,7 +148,11 @@ func newModel() (*model, error) {
 		selected:     selected,
 		expanded:     map[string]bool{},
 		selectedHash: commits[selected].Hash,
+		phabStatuses: map[string]string{},
+		phabPending:  map[string]bool{},
+		phabResults:  make(chan phabStatusResult, 128),
 	}
+	startPhabStatusFetches(m)
 	return m, nil
 }
 
@@ -154,11 +172,12 @@ func runInteractive(m *model) error {
 	top := 0
 
 	for {
+		processPhabStatusResults(m)
 		rows, nextTop := render(m, top)
 		m.lastRenderRows = rows
 		top = nextTop
 
-		k, err := readKey(reader, fd)
+		k, ok, err := readNextEvent(reader, fd, hasPendingPhabStatus(m))
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				renderWithoutSelection(m, top)
@@ -166,6 +185,10 @@ func runInteractive(m *model) error {
 			}
 			clearRenderArea(m.lastRenderRows)
 			return err
+		}
+		if !ok {
+			m.progressFrame++
+			continue
 		}
 
 		switch k {
@@ -225,6 +248,19 @@ func runInteractive(m *model) error {
 			return nil
 		}
 	}
+}
+
+func readNextEvent(reader *bufio.Reader, fd int, pending bool) (key, bool, error) {
+	if !pending {
+		k, err := readKey(reader, fd)
+		return k, true, err
+	}
+	ok, err := waitForReaderInput(reader, fd, 80*time.Millisecond)
+	if err != nil || !ok {
+		return keyUnknown, false, err
+	}
+	k, err := readKey(reader, fd)
+	return k, true, err
 }
 
 func fetchSmartlog() ([]string, error) {
@@ -303,6 +339,7 @@ func parseCommits(lines []smartlogLine) []commit {
 			HeaderLine:  i,
 			AnchorLine:  i,
 			SubjectLine: -1,
+			DiffID:      extractDiffID(line.plain),
 		})
 	}
 
@@ -326,6 +363,10 @@ func parseCommits(lines []smartlogLine) []commit {
 	}
 
 	return commits
+}
+
+func extractDiffID(line string) string {
+	return diffIDRe.FindString(line)
 }
 
 func splitContentLine(line string) (string, string, bool) {
@@ -503,15 +544,16 @@ func renderExpansionBody(c commit, width int, style md.RenderStyle) []smartlogLi
 }
 
 func render(m *model, top int) (int, int) {
-	return renderWithSelection(m, top, true, false)
+	return renderWithSelection(m, top, true, false, true)
 }
 
 func renderWithoutSelection(m *model, top int) (int, int) {
-	return renderWithSelection(m, top, false, true)
+	processPhabStatusResults(m)
+	return renderWithSelection(m, top, false, true, false)
 }
 
-func renderWithSelection(m *model, top int, highlightSelection bool, preserveViewport bool) (int, int) {
-	rendered, selectedLine := buildRenderedLines(m)
+func renderWithSelection(m *model, top int, highlightSelection bool, preserveViewport bool, showPendingPhab bool) (int, int) {
+	rendered, selectedLine := buildRenderedLinesWithPending(m, showPendingPhab)
 	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || termHeight <= 0 {
 		termHeight = 24
@@ -589,6 +631,10 @@ func adjustViewportTop(top, selectedLine int, lineRows []int, maxHeight int, pre
 }
 
 func buildRenderedLines(m *model) ([]smartlogLine, int) {
+	return buildRenderedLinesWithPending(m, true)
+}
+
+func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLine, int) {
 	headerByLine := make(map[int]int, len(m.commits))
 	anchorByLine := make(map[int]int, len(m.commits))
 	for i, c := range m.commits {
@@ -603,6 +649,9 @@ func buildRenderedLines(m *model) ([]smartlogLine, int) {
 		if idx, ok := headerByLine[i]; ok && idx == m.selected {
 			selectedLine = len(rendered)
 		}
+		if idx, ok := headerByLine[i]; ok {
+			line = appendPhabStatus(line, m.commits[idx], m, showPendingPhab)
+		}
 		rendered = append(rendered, line)
 		if idx, ok := anchorByLine[i]; ok && m.expanded[m.commits[idx].Hash] {
 			rendered = append(rendered, m.commits[idx].BodyLines...)
@@ -610,6 +659,24 @@ func buildRenderedLines(m *model) ([]smartlogLine, int) {
 	}
 
 	return rendered, selectedLine
+}
+
+func appendPhabStatus(line smartlogLine, c commit, m *model, showPending bool) smartlogLine {
+	if c.DiffID == "" {
+		return line
+	}
+	status := m.phabStatuses[c.DiffID]
+	if status == "" && showPending && m.phabPending[c.DiffID] {
+		status = progressFrames[m.progressFrame%len(progressFrames)]
+	}
+	if status == "" {
+		return line
+	}
+	annotation := "  " + status
+	return smartlogLine{
+		raw:   line.raw + annotation,
+		plain: line.plain + annotation,
+	}
 }
 
 func refreshModel(m *model) error {
@@ -662,7 +729,146 @@ func refreshModel(m *model) error {
 	m.selected = selected
 	m.selectedHash = commits[selected].Hash
 	m.expanded = newExpanded
+	startPhabStatusFetches(m)
 	return nil
+}
+
+func startPhabStatusFetches(m *model) {
+	if m.phabStatuses == nil {
+		m.phabStatuses = map[string]string{}
+	}
+	if m.phabPending == nil {
+		m.phabPending = map[string]bool{}
+	}
+	if m.phabResults == nil {
+		m.phabResults = make(chan phabStatusResult, 128)
+	}
+
+	seen := map[string]bool{}
+	for _, c := range m.commits {
+		if c.DiffID == "" || seen[c.DiffID] {
+			continue
+		}
+		seen[c.DiffID] = true
+		if m.phabStatuses[c.DiffID] != "" || m.phabPending[c.DiffID] {
+			continue
+		}
+		m.phabPending[c.DiffID] = true
+		go func(diffID string) {
+			status, err := fetchPhabStatus(diffID)
+			m.phabResults <- phabStatusResult{diffID: diffID, status: status, err: err}
+		}(c.DiffID)
+	}
+}
+
+func processPhabStatusResults(m *model) bool {
+	changed := false
+	for {
+		select {
+		case result := <-m.phabResults:
+			delete(m.phabPending, result.diffID)
+			if result.err == nil && result.status != "" {
+				m.phabStatuses[result.diffID] = result.status
+			}
+			changed = true
+		default:
+			return changed
+		}
+	}
+}
+
+func hasPendingPhabStatus(m *model) bool {
+	for _, c := range m.commits {
+		if c.DiffID != "" && m.phabPending[c.DiffID] {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchPhabStatus(diffID string) (string, error) {
+	status, err := fetchMetaPhabStatus(diffID)
+	if err == nil && status != "" {
+		return status, nil
+	}
+	fallback, fallbackErr := fetchJellyfishPhabStatus(diffID)
+	if fallbackErr == nil && fallback != "" {
+		return fallback, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return "", fallbackErr
+}
+
+func fetchMetaPhabStatus(diffID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "meta", "phabricator.diff", "describe", "--number="+diffID, "--output=json", "--no-color")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(out, &data); err != nil {
+		return "", err
+	}
+	return phabStatusFromMap(data), nil
+}
+
+func fetchJellyfishPhabStatus(diffID string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "jf", "--json", "diff-properties", diffID)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	var wrapper map[string]any
+	if err := json.Unmarshal(out, &wrapper); err != nil {
+		return "", err
+	}
+	data, _ := wrapper["data"].(map[string]any)
+	properties, _ := data["diff-properties"].(map[string]any)
+	return phabStatusFromMap(properties), nil
+}
+
+func phabStatusFromMap(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+	if jsonBool(data["is_landed"]) {
+		return "landed"
+	}
+	if jsonBool(data["is_landing"]) {
+		return "landing"
+	}
+	status, _ := data["status"].(string)
+	return humanStatus(status)
+}
+
+func jsonBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true")
+	default:
+		return false
+	}
+}
+
+func humanStatus(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return ""
+	}
+	status = strings.ReplaceAll(status, "_", " ")
+	return strings.ToLower(status)
 }
 
 func suspendAndRun(m *model, origState *term.State, fn func() error) error {
