@@ -28,6 +28,8 @@ var diffIDRe = regexp.MustCompile(`\bD[0-9]+\b`)
 var ansiCSIRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 var oscRe = regexp.MustCompile(`\x1b\].*?(\x07|\x1b\\)`)
 
+var selectInput = syscall.Select
+
 var progressFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type commit struct {
@@ -997,14 +999,25 @@ func decodeCursorFinal(final byte) key {
 }
 
 func waitForInput(fd int, timeout time.Duration) (bool, error) {
-	var readfds syscall.FdSet
-	fdSet(fd, &readfds)
-	tv := syscall.NsecToTimeval(timeout.Nanoseconds())
-	n, err := syscall.Select(fd+1, &readfds, nil, nil, &tv)
-	if err != nil {
-		return false, err
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, nil
+		}
+
+		var readfds syscall.FdSet
+		fdSet(fd, &readfds)
+		tv := syscall.NsecToTimeval(remaining.Nanoseconds())
+		n, err := selectInput(fd+1, &readfds, nil, nil, &tv)
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return false, err
+		}
+		return n > 0, nil
 	}
-	return n > 0, nil
 }
 
 func waitForReaderInput(reader *bufio.Reader, fd int, timeout time.Duration) (bool, error) {

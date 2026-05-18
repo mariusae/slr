@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mariusae/md"
 )
@@ -205,6 +207,33 @@ func TestReadKeyMapsCtrlR(t *testing.T) {
 	}
 	if got != keyCtrlR {
 		t.Fatalf("got %v want %v", got, keyCtrlR)
+	}
+}
+
+func TestWaitForInputRetriesInterruptedSystemCall(t *testing.T) {
+	oldSelectInput := selectInput
+	defer func() {
+		selectInput = oldSelectInput
+	}()
+
+	calls := 0
+	selectInput = func(nfd int, r, w, e *syscall.FdSet, timeout *syscall.Timeval) (int, error) {
+		calls++
+		if calls == 1 {
+			return 0, syscall.EINTR
+		}
+		return 1, nil
+	}
+
+	ok, err := waitForInput(0, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("got no input after interrupted select retry")
+	}
+	if calls != 2 {
+		t.Fatalf("got %d select calls, want 2", calls)
 	}
 }
 
