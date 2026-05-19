@@ -210,6 +210,14 @@ func TestReadKeyMapsCtrlR(t *testing.T) {
 	}
 }
 
+func TestMDiffArgsUsePagedMode(t *testing.T) {
+	got := mdiffArgs(&model{commits: []commit{{Hash: "abc123"}}})
+	want := []string{"-P", "-c", "abc123"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
 func TestWaitForInputRetriesInterruptedSystemCall(t *testing.T) {
 	oldSelectInput := selectInput
 	defer func() {
@@ -398,14 +406,15 @@ func TestMdiffArgsUsesWorkingCopyForStatusBlock(t *testing.T) {
 		commits:        []commit{{Hash: "aaaaaaaaaa"}},
 		statusSelected: true,
 	}
-	if got := mdiffArgs(m); got != nil {
-		t.Fatalf("got %#v, want no arguments", got)
+	want := []string{"-P"}
+	if got := mdiffArgs(m); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
 
 func TestMdiffArgsUsesCommitForCommitSelection(t *testing.T) {
 	m := &model{commits: []commit{{Hash: "aaaaaaaaaa"}}}
-	want := []string{"-c", "aaaaaaaaaa"}
+	want := []string{"-P", "-c", "aaaaaaaaaa"}
 	if got := mdiffArgs(m); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}

@@ -293,9 +293,9 @@ func moveSelectionDown(m *model) {
 
 func mdiffArgs(m *model) []string {
 	if m.statusSelected {
-		return nil
+		return []string{"-P"}
 	}
-	return []string{"-c", currentCommit(m).Hash}
+	return []string{"-P", "-c", currentCommit(m).Hash}
 }
 
 func readNextEvent(reader *bufio.Reader, fd int, pending bool) (key, bool, error) {

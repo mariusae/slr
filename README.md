@@ -18,7 +18,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - `Space` to expand the selected commit description
 - Expanded descriptions rendered as markdown via `github.com/mariusae/md`
 - `Ctrl-G` to run `sl metaedit -r <hash>`
-- `Ctrl-D` to run `mdiff -c <hash>` for a commit or `mdiff` for the working copy
+- `Ctrl-D` to run paged `mdiff -P -c <hash>` for a commit or `mdiff -P` for the working copy
 - `Ctrl-R` to refresh the smartlog view
 - `q` or `Esc` to exit while leaving the rendered content on screen
 
