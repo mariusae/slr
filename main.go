@@ -34,6 +34,7 @@ var progressFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "
 
 type commit struct {
 	Hash          string
+	FullHash      string
 	Marker        string
 	HeaderLine    int
 	AnchorLine    int
@@ -65,6 +66,7 @@ type model struct {
 	phabPending    map[string]bool
 	phabResults    chan phabStatusResult
 	progressFrame  int
+	kaleidoscope   bool
 }
 
 type key int
@@ -136,6 +138,10 @@ func newModel() (*model, error) {
 	lines := makeSmartlogLines(rawLines)
 
 	commits := parseCommits(lines)
+	kaleidoscope := isFBSource()
+	if kaleidoscope {
+		resolveFullHashes(commits)
+	}
 	selected := 0
 	for i, c := range commits {
 		if c.Marker == "@" {
@@ -153,6 +159,7 @@ func newModel() (*model, error) {
 		phabStatuses: map[string]string{},
 		phabPending:  map[string]bool{},
 		phabResults:  make(chan phabStatusResult, 128),
+		kaleidoscope: kaleidoscope,
 	}
 	startPhabStatusFetches(m)
 	return m, nil
@@ -652,6 +659,9 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 			selectedLine = len(rendered)
 		}
 		if idx, ok := headerByLine[i]; ok {
+			if m.kaleidoscope {
+				line = appendKaleidoscopeLink(line, m.commits[idx])
+			}
 			line = appendPhabStatus(line, m.commits[idx], m, showPendingPhab)
 		}
 		rendered = append(rendered, line)
@@ -661,6 +671,17 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 	}
 
 	return rendered, selectedLine
+}
+
+func appendKaleidoscopeLink(line smartlogLine, c commit) smartlogLine {
+	if c.FullHash == "" {
+		return line
+	}
+	label := "▤ksdiff"
+	return smartlogLine{
+		raw:   line.raw + "  \x1b]8;;ksdiff://" + c.FullHash + "\x1b\\" + label + "\x1b]8;;\x1b\\",
+		plain: line.plain + "  " + label,
+	}
 }
 
 func appendPhabStatus(line smartlogLine, c commit, m *model, showPending bool) smartlogLine {
@@ -691,6 +712,9 @@ func refreshModel(m *model) error {
 	}
 	lines := makeSmartlogLines(rawLines)
 	commits := parseCommits(lines)
+	if m.kaleidoscope {
+		resolveFullHashes(commits)
+	}
 	if len(commits) == 0 {
 		m.lines = lines
 		m.commits = nil
@@ -733,6 +757,33 @@ func refreshModel(m *model) error {
 	m.expanded = newExpanded
 	startPhabStatusFetches(m)
 	return nil
+}
+
+func isFBSource() bool {
+	cmd := exec.Command("sl", "config", "remotefilelog.reponame")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "fbsource"
+}
+
+func resolveFullHashes(commits []commit) {
+	cmd := exec.Command("sl", "log", "-r", revset, "-T", "{node}\\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	assignFullHashes(commits, strings.Fields(string(out)))
+}
+
+func assignFullHashes(commits []commit, fullHashes []string) {
+	for i := range commits {
+		for _, fullHash := range fullHashes {
+			if strings.HasPrefix(fullHash, commits[i].Hash) {
+				commits[i].FullHash = fullHash
+				break
+			}
+		}
+	}
 }
 
 func startPhabStatusFetches(m *model) {

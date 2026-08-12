@@ -321,6 +321,70 @@ func TestBuildRenderedLinesShowsPhabStatus(t *testing.T) {
 	}
 }
 
+func TestBuildRenderedLinesAddsKaleidoscopeLinkForDiff(t *testing.T) {
+	const fullHash = "d515a67992a23a75a06a01d5f969ea346228fa17"
+	m := &model{
+		lines: makeSmartlogLines([]string{
+			"@  d515a67992  now  D123",
+			"│  subject",
+		}),
+		commits: []commit{
+			{
+				Hash:       "d515a67992",
+				FullHash:   fullHash,
+				HeaderLine: 0,
+				AnchorLine: 0,
+				DiffID:     "D123",
+			},
+		},
+		expanded:     map[string]bool{},
+		kaleidoscope: true,
+	}
+
+	got, _ := buildRenderedLines(m)
+	if got[0].plain != "@  d515a67992  now  D123  ▤ksdiff" {
+		t.Fatalf("got plain line %q", got[0].plain)
+	}
+	wantLink := "\x1b]8;;ksdiff://" + fullHash + "\x1b\\▤ksdiff\x1b]8;;\x1b\\"
+	if !strings.Contains(got[0].raw, wantLink) {
+		t.Fatalf("raw line %q does not contain %q", got[0].raw, wantLink)
+	}
+}
+
+func TestAssignFullHashesOnlyMatchesDraftCommits(t *testing.T) {
+	commits := []commit{
+		{Hash: "1111111111"},
+		{Hash: "2222222222"},
+	}
+	assignFullHashes(commits, []string{"2222222222222222222222222222222222222222"})
+
+	if commits[0].FullHash != "" {
+		t.Fatalf("got full hash %q for non-draft commit", commits[0].FullHash)
+	}
+	if commits[1].FullHash != "2222222222222222222222222222222222222222" {
+		t.Fatalf("got full hash %q", commits[1].FullHash)
+	}
+}
+
+func TestBuildRenderedLinesOmitsKaleidoscopeLinkOutsideFBSource(t *testing.T) {
+	m := &model{
+		lines: makeSmartlogLines([]string{"@  d515a67992  now  D123"}),
+		commits: []commit{{
+			Hash:       "d515a67992",
+			FullHash:   "d515a67992a23a75a06a01d5f969ea346228fa17",
+			HeaderLine: 0,
+			AnchorLine: 0,
+			DiffID:     "D123",
+		}},
+		expanded: map[string]bool{},
+	}
+
+	got, _ := buildRenderedLines(m)
+	if got[0].plain != "@  d515a67992  now  D123" {
+		t.Fatalf("got %q", got[0].plain)
+	}
+}
+
 func TestBuildRenderedLinesShowsPendingPhabSpinner(t *testing.T) {
 	m := &model{
 		lines: makeSmartlogLines([]string{

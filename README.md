@@ -11,6 +11,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 ## Features
 
 - Inline smartlog view using Sapling's own graph output
+- Kaleidoscope links beside diffs when run in fbsource
 - `Up` / `Down` to move between draft commits
 - `Enter` to `sl goto` the selected commit and exit
 - `Space` to expand the selected commit description
