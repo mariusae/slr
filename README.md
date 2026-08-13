@@ -11,7 +11,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 ## Features
 
 - Inline smartlog view using Sapling's own graph output
-- Working-copy status from `sl status` at the bottom of the view
+- Working-copy status from `sl status` at the top of the view
 - Kaleidoscope links beside diffs when run in fbsource
 - `Up` / `Down` to move between draft commits and the working-copy status block
 - `Enter` to `sl goto` the selected commit and exit
@@ -36,11 +36,11 @@ Run the binary from inside a Sapling repository:
 ./slr
 ```
 
-If stdin/stdout is not a terminal, it falls back to plain smartlog and status output:
+If stdin/stdout is not a terminal, it falls back to plain status and smartlog output:
 
 ```sh
-sl sl -r 'draft() & ((::.) + (.::))'
 sl status
+sl sl -r 'draft() & ((::.) + (.::))'
 ```
 
 ## Notes

@@ -319,7 +319,7 @@ func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	}
 }
 
-func TestBuildRenderedLinesAppendsStatusAtBottom(t *testing.T) {
+func TestBuildRenderedLinesPrependsStatusAtTop(t *testing.T) {
 	m := &model{
 		lines: makeSmartlogLines([]string{
 			"@  aaaaaaaaaa  now",
@@ -339,11 +339,11 @@ func TestBuildRenderedLinesAppendsStatusAtBottom(t *testing.T) {
 
 	got, _ := buildRenderedLines(m)
 	want := []string{
-		"@  aaaaaaaaaa  now",
-		"│  subject",
-		"",
 		"Changes not committed:",
 		"M main.go",
+		"",
+		"@  aaaaaaaaaa  now",
+		"│  subject",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d lines, want %d: %#v", len(got), len(want), got)
@@ -372,21 +372,21 @@ func TestStatusBlockIsSelectableWithArrowNavigation(t *testing.T) {
 	m := &model{
 		statusLines:  makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
 		commits:      []commit{{Hash: "aaaaaaaaaa"}, {Hash: "bbbbbbbbbb"}},
-		selected:     1,
-		selectedHash: "bbbbbbbbbb",
+		selected:     0,
+		selectedHash: "aaaaaaaaaa",
 	}
 
-	moveSelectionDown(m)
+	moveSelectionUp(m)
 	if !m.statusSelected {
-		t.Fatal("Down did not select status block")
-	}
-	moveSelectionDown(m)
-	if !m.statusSelected {
-		t.Fatal("second Down left status block")
+		t.Fatal("Up did not select status block")
 	}
 	moveSelectionUp(m)
-	if m.statusSelected || m.selected != 1 {
-		t.Fatalf("Up returned status=%v commit=%d", m.statusSelected, m.selected)
+	if !m.statusSelected {
+		t.Fatal("second Up left status block")
+	}
+	moveSelectionDown(m)
+	if m.statusSelected || m.selected != 0 {
+		t.Fatalf("Down returned status=%v commit=%d", m.statusSelected, m.selected)
 	}
 }
 
@@ -400,17 +400,20 @@ func TestBuildRenderedLinesSelectsStatusBlockStart(t *testing.T) {
 	}
 
 	_, selectedLine := buildRenderedLines(m)
-	if selectedLine != 2 {
-		t.Fatalf("selected line = %d, want 2", selectedLine)
+	if selectedLine != 0 {
+		t.Fatalf("selected line = %d, want 0", selectedLine)
 	}
 }
 
 func TestRenderedLineSelectedIncludesEntireStatusBlock(t *testing.T) {
-	m := &model{statusSelected: true}
-	if renderedLineSelected(m, 1, 2, 2) {
-		t.Fatal("separator before status block was selected")
+	m := &model{
+		statusLines:    makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
+		statusSelected: true,
 	}
-	if !renderedLineSelected(m, 2, 2, 2) || !renderedLineSelected(m, 3, 2, 2) {
+	if renderedLineSelected(m, 2, 0, 0) {
+		t.Fatal("separator after status block was selected")
+	}
+	if !renderedLineSelected(m, 0, 0, 0) || !renderedLineSelected(m, 1, 0, 0) {
 		t.Fatal("not every status line was selected")
 	}
 }

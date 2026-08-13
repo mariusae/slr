@@ -268,26 +268,28 @@ func runInteractive(m *model) error {
 
 func moveSelectionUp(m *model) {
 	if m.statusSelected {
-		m.statusSelected = false
 		return
 	}
 	if m.selected > 0 {
 		m.selected--
 		m.selectedHash = m.commits[m.selected].Hash
+		return
+	}
+	if len(m.statusLines) > 0 {
+		m.statusSelected = true
 	}
 }
 
 func moveSelectionDown(m *model) {
 	if m.statusSelected {
+		m.statusSelected = false
+		m.selected = 0
+		m.selectedHash = m.commits[0].Hash
 		return
 	}
 	if m.selected < len(m.commits)-1 {
 		m.selected++
 		m.selectedHash = m.commits[m.selected].Hash
-		return
-	}
-	if len(m.statusLines) > 0 {
-		m.statusSelected = true
 	}
 }
 
@@ -398,10 +400,10 @@ func clearProgressFrame() {
 }
 
 func printPlainView() error {
-	if err := runAttached("sl", "sl", "-r", revset); err != nil {
+	if err := runAttached("sl", "status"); err != nil {
 		return err
 	}
-	return runAttached("sl", "status")
+	return runAttached("sl", "sl", "-r", revset)
 }
 
 func parseCommits(lines []smartlogLine) []commit {
@@ -654,7 +656,7 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 
 	selectedEnd := selectedLine + 1
 	if m.statusSelected {
-		selectedEnd = len(rendered)
+		selectedEnd = selectedLine + len(m.statusLines)
 	}
 	top = adjustViewportTop(top, selectedLine, selectedEnd, lineRows, maxHeight, preserveViewport)
 
@@ -671,7 +673,7 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 	view := rendered[top:end]
 
 	clearRenderArea(m.lastRenderRows)
-	statusStart := len(rendered) - len(m.statusLines)
+	statusStart := 0
 	for i, line := range view {
 		absoluteLine := top + i
 		lineEnd := "\r\n"
@@ -686,7 +688,7 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 
 func renderedLineSelected(m *model, line, selectedLine, statusStart int) bool {
 	if m.statusSelected {
-		return line >= statusStart
+		return line >= statusStart && line < statusStart+len(m.statusLines)
 	}
 	return line == selectedLine
 }
@@ -735,6 +737,13 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 
 	rendered := make([]smartlogLine, 0, len(m.lines)+len(m.statusLines)+1)
 	selectedLine := 0
+	if len(m.statusLines) > 0 {
+		if m.statusSelected {
+			selectedLine = len(rendered)
+		}
+		rendered = append(rendered, m.statusLines...)
+		rendered = append(rendered, smartlogLine{})
+	}
 
 	for i, line := range m.lines {
 		if idx, ok := headerByLine[i]; ok && idx == m.selected && !m.statusSelected {
@@ -751,14 +760,6 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 			rendered = append(rendered, m.commits[idx].BodyLines...)
 		}
 	}
-	if len(m.statusLines) > 0 {
-		rendered = append(rendered, smartlogLine{})
-		if m.statusSelected {
-			selectedLine = len(rendered)
-		}
-		rendered = append(rendered, m.statusLines...)
-	}
-
 	return rendered, selectedLine
 }
 
