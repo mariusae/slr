@@ -55,8 +55,11 @@ type smartlogLine struct {
 
 type model struct {
 	lines          []smartlogLine
+	statusLines    []smartlogLine
 	commits        []commit
 	selected       int
+	statusSelected bool
+	statusLine     int
 	expanded       map[string]bool
 	selectedHash   string
 	lastRenderRows int
@@ -96,8 +99,9 @@ type lineStyle struct {
 }
 
 type smartlogFetchResult struct {
-	lines []string
-	err   error
+	lines       []string
+	statusLines []string
+	err         error
 }
 
 type phabStatusResult struct {
@@ -108,7 +112,7 @@ type phabStatusResult struct {
 
 func main() {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		if err := runAttached("sl", "sl", "-r", revset); err != nil {
+		if err := printPlainView(); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -119,7 +123,7 @@ func main() {
 		exitWithError(err)
 	}
 	if len(m.commits) == 0 {
-		if err := printPlainSmartlog(); err != nil {
+		if err := printPlainView(); err != nil {
 			exitWithError(err)
 		}
 		return
@@ -131,7 +135,7 @@ func main() {
 }
 
 func newModel() (*model, error) {
-	rawLines, err := fetchSmartlogWithProgress("loading")
+	rawLines, rawStatusLines, err := fetchRepositoryViewWithProgress("loading")
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +156,7 @@ func newModel() (*model, error) {
 
 	m := &model{
 		lines:        lines,
+		statusLines:  makeSmartlogLines(rawStatusLines),
 		commits:      commits,
 		selected:     selected,
 		expanded:     map[string]bool{},
@@ -202,20 +207,20 @@ func runInteractive(m *model) error {
 
 		switch k {
 		case keyUp:
-			if m.selected > 0 {
-				m.selected--
-				m.selectedHash = m.commits[m.selected].Hash
-			}
+			moveSelectionUp(m)
 		case keyDown:
-			if m.selected < len(m.commits)-1 {
-				m.selected++
-				m.selectedHash = m.commits[m.selected].Hash
-			}
+			moveSelectionDown(m)
 		case keySpace:
+			if m.statusSelected {
+				break
+			}
 			if err := toggleExpanded(m); err != nil {
 				return err
 			}
 		case keyCtrlG:
+			if m.statusSelected {
+				break
+			}
 			hash := currentCommit(m).Hash
 			if err := suspendAndRun(m, origState, func() error {
 				return runAttached("sl", "metaedit", "-r", hash)
@@ -227,6 +232,9 @@ func runInteractive(m *model) error {
 			}
 			top = 0
 		case keyCtrlD:
+			if m.statusSelected {
+				break
+			}
 			hash := currentCommit(m).Hash
 			if err := suspendAndRun(m, origState, func() error {
 				return runAttached("mdiff", "-c", hash)
@@ -243,6 +251,9 @@ func runInteractive(m *model) error {
 			}
 			top = 0
 		case keyEnter:
+			if m.statusSelected {
+				break
+			}
 			hash := currentCommit(m).Hash
 			if err := runQuiet("sl", "goto", hash); err != nil {
 				return err
@@ -256,6 +267,39 @@ func runInteractive(m *model) error {
 			renderWithoutSelection(m, top)
 			return nil
 		}
+	}
+}
+
+func moveSelectionUp(m *model) {
+	if m.statusSelected {
+		if m.statusLine > 0 {
+			m.statusLine--
+			return
+		}
+		m.statusSelected = false
+		return
+	}
+	if m.selected > 0 {
+		m.selected--
+		m.selectedHash = m.commits[m.selected].Hash
+	}
+}
+
+func moveSelectionDown(m *model) {
+	if m.statusSelected {
+		if m.statusLine+1 < len(m.statusLines) {
+			m.statusLine++
+		}
+		return
+	}
+	if m.selected < len(m.commits)-1 {
+		m.selected++
+		m.selectedHash = m.commits[m.selected].Hash
+		return
+	}
+	if len(m.statusLines) > 0 {
+		m.statusSelected = true
+		m.statusLine = 0
 	}
 }
 
@@ -291,15 +335,46 @@ func fetchSmartlog() ([]string, error) {
 	return strings.Split(text, "\n"), nil
 }
 
-func fetchSmartlogWithProgress(label string) ([]string, error) {
+func fetchStatus() ([]string, error) {
+	command := "sl --pager=off status"
+	cmd := exec.Command("script", "-qefc", command, "/dev/null")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stdout
+	if err := cmd.Run(); err != nil {
+		if stdout.Len() > 0 {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stripControlForError(stdout.String())))
+		}
+		return nil, err
+	}
+	text := normalizeSmartlogOutput(stdout.String())
+	if text == "" {
+		return []string{}, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
+func fetchRepositoryView() ([]string, []string, error) {
+	lines, err := fetchSmartlog()
+	if err != nil {
+		return nil, nil, err
+	}
+	statusLines, err := fetchStatus()
+	if err != nil {
+		return nil, nil, err
+	}
+	return lines, statusLines, nil
+}
+
+func fetchRepositoryViewWithProgress(label string) ([]string, []string, error) {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		return fetchSmartlog()
+		return fetchRepositoryView()
 	}
 
 	results := make(chan smartlogFetchResult, 1)
 	go func() {
-		lines, err := fetchSmartlog()
-		results <- smartlogFetchResult{lines: lines, err: err}
+		lines, statusLines, err := fetchRepositoryView()
+		results <- smartlogFetchResult{lines: lines, statusLines: statusLines, err: err}
 	}()
 
 	ticker := time.NewTicker(80 * time.Millisecond)
@@ -311,7 +386,7 @@ func fetchSmartlogWithProgress(label string) ([]string, error) {
 		select {
 		case result := <-results:
 			clearProgressFrame()
-			return result.lines, result.err
+			return result.lines, result.statusLines, result.err
 		case <-ticker.C:
 			frame++
 			renderProgressFrame(label, frame)
@@ -327,12 +402,11 @@ func clearProgressFrame() {
 	fmt.Fprint(os.Stdout, "\r\x1b[K")
 }
 
-func printPlainSmartlog() error {
-	cmd := exec.Command("sl", "sl", "-r", revset)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+func printPlainView() error {
+	if err := runAttached("sl", "sl", "-r", revset); err != nil {
+		return err
+	}
+	return runAttached("sl", "status")
 }
 
 func parseCommits(lines []smartlogLine) []commit {
@@ -651,11 +725,11 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 		anchorByLine[c.AnchorLine] = i
 	}
 
-	rendered := make([]smartlogLine, 0, len(m.lines))
+	rendered := make([]smartlogLine, 0, len(m.lines)+len(m.statusLines)+1)
 	selectedLine := 0
 
 	for i, line := range m.lines {
-		if idx, ok := headerByLine[i]; ok && idx == m.selected {
+		if idx, ok := headerByLine[i]; ok && idx == m.selected && !m.statusSelected {
 			selectedLine = len(rendered)
 		}
 		if idx, ok := headerByLine[i]; ok {
@@ -668,6 +742,13 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 		if idx, ok := anchorByLine[i]; ok && m.expanded[m.commits[idx].Hash] {
 			rendered = append(rendered, m.commits[idx].BodyLines...)
 		}
+	}
+	if len(m.statusLines) > 0 {
+		rendered = append(rendered, smartlogLine{})
+		if m.statusSelected {
+			selectedLine = len(rendered) + m.statusLine
+		}
+		rendered = append(rendered, m.statusLines...)
 	}
 
 	return rendered, selectedLine
@@ -703,24 +784,30 @@ func appendPhabStatus(line smartlogLine, c commit, m *model, showPending bool) s
 }
 
 func refreshModel(m *model) error {
+	statusSelected := m.statusSelected
+	statusLine := m.statusLine
 	clearRenderArea(m.lastRenderRows)
 	m.lastRenderRows = 0
 
-	rawLines, err := fetchSmartlogWithProgress("refreshing")
+	rawLines, rawStatusLines, err := fetchRepositoryViewWithProgress("refreshing")
 	if err != nil {
 		return err
 	}
 	lines := makeSmartlogLines(rawLines)
+	statusLines := makeSmartlogLines(rawStatusLines)
 	commits := parseCommits(lines)
 	if m.kaleidoscope {
 		resolveFullHashes(commits)
 	}
 	if len(commits) == 0 {
 		m.lines = lines
+		m.statusLines = statusLines
 		m.commits = nil
 		m.expanded = map[string]bool{}
 		m.selected = 0
 		m.selectedHash = ""
+		m.statusSelected = false
+		m.statusLine = 0
 		return nil
 	}
 
@@ -751,10 +838,17 @@ func refreshModel(m *model) error {
 	}
 
 	m.lines = lines
+	m.statusLines = statusLines
 	m.commits = commits
 	m.selected = selected
 	m.selectedHash = commits[selected].Hash
 	m.expanded = newExpanded
+	m.statusSelected = statusSelected && len(statusLines) > 0
+	if m.statusSelected {
+		m.statusLine = min(statusLine, len(statusLines)-1)
+	} else {
+		m.statusLine = 0
+	}
 	startPhabStatusFetches(m)
 	return nil
 }

@@ -297,6 +297,94 @@ func TestBuildRenderedLinesIncludesExpansion(t *testing.T) {
 	}
 }
 
+func TestBuildRenderedLinesAppendsStatusAtBottom(t *testing.T) {
+	m := &model{
+		lines: makeSmartlogLines([]string{
+			"@  aaaaaaaaaa  now",
+			"│  subject",
+		}),
+		statusLines: makeSmartlogLines([]string{
+			"Changes not committed:",
+			"M main.go",
+		}),
+		commits: []commit{{
+			Hash:       "aaaaaaaaaa",
+			HeaderLine: 0,
+			AnchorLine: 1,
+		}},
+		expanded: map[string]bool{},
+	}
+
+	got, _ := buildRenderedLines(m)
+	want := []string{
+		"@  aaaaaaaaaa  now",
+		"│  subject",
+		"",
+		"Changes not committed:",
+		"M main.go",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].plain != want[i] {
+			t.Fatalf("line %d: got %q, want %q", i, got[i].plain, want[i])
+		}
+	}
+}
+
+func TestBuildRenderedLinesDoesNotAppendSeparatorForCleanStatus(t *testing.T) {
+	m := &model{
+		lines:    makeSmartlogLines([]string{"@  aaaaaaaaaa  now"}),
+		commits:  []commit{{Hash: "aaaaaaaaaa", HeaderLine: 0, AnchorLine: 0}},
+		expanded: map[string]bool{},
+	}
+
+	got, _ := buildRenderedLines(m)
+	if len(got) != 1 || got[0].plain != "@  aaaaaaaaaa  now" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestStatusLinesAreSelectableWithArrowNavigation(t *testing.T) {
+	m := &model{
+		statusLines:  makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
+		commits:      []commit{{Hash: "aaaaaaaaaa"}, {Hash: "bbbbbbbbbb"}},
+		selected:     1,
+		selectedHash: "bbbbbbbbbb",
+	}
+
+	moveSelectionDown(m)
+	if !m.statusSelected || m.statusLine != 0 {
+		t.Fatalf("first Down selected status=%v line=%d", m.statusSelected, m.statusLine)
+	}
+	moveSelectionDown(m)
+	if !m.statusSelected || m.statusLine != 1 {
+		t.Fatalf("second Down selected status=%v line=%d", m.statusSelected, m.statusLine)
+	}
+	moveSelectionUp(m)
+	moveSelectionUp(m)
+	if m.statusSelected || m.selected != 1 {
+		t.Fatalf("Up returned status=%v commit=%d", m.statusSelected, m.selected)
+	}
+}
+
+func TestBuildRenderedLinesSelectsStatusLine(t *testing.T) {
+	m := &model{
+		lines:          makeSmartlogLines([]string{"@  aaaaaaaaaa  now"}),
+		statusLines:    makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
+		commits:        []commit{{Hash: "aaaaaaaaaa", HeaderLine: 0, AnchorLine: 0}},
+		expanded:       map[string]bool{},
+		statusSelected: true,
+		statusLine:     1,
+	}
+
+	_, selectedLine := buildRenderedLines(m)
+	if selectedLine != 3 {
+		t.Fatalf("selected line = %d, want 3", selectedLine)
+	}
+}
+
 func TestBuildRenderedLinesShowsPhabStatus(t *testing.T) {
 	m := &model{
 		lines: makeSmartlogLines([]string{
