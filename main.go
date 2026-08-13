@@ -59,7 +59,6 @@ type model struct {
 	commits        []commit
 	selected       int
 	statusSelected bool
-	statusLine     int
 	expanded       map[string]bool
 	selectedHash   string
 	lastRenderRows int
@@ -232,12 +231,9 @@ func runInteractive(m *model) error {
 			}
 			top = 0
 		case keyCtrlD:
-			if m.statusSelected {
-				break
-			}
-			hash := currentCommit(m).Hash
+			args := mdiffArgs(m)
 			if err := suspendAndRun(m, origState, func() error {
-				return runAttached("mdiff", "-c", hash)
+				return runAttached("mdiff", args...)
 			}); err != nil {
 				return err
 			}
@@ -272,10 +268,6 @@ func runInteractive(m *model) error {
 
 func moveSelectionUp(m *model) {
 	if m.statusSelected {
-		if m.statusLine > 0 {
-			m.statusLine--
-			return
-		}
 		m.statusSelected = false
 		return
 	}
@@ -287,9 +279,6 @@ func moveSelectionUp(m *model) {
 
 func moveSelectionDown(m *model) {
 	if m.statusSelected {
-		if m.statusLine+1 < len(m.statusLines) {
-			m.statusLine++
-		}
 		return
 	}
 	if m.selected < len(m.commits)-1 {
@@ -299,8 +288,14 @@ func moveSelectionDown(m *model) {
 	}
 	if len(m.statusLines) > 0 {
 		m.statusSelected = true
-		m.statusLine = 0
 	}
+}
+
+func mdiffArgs(m *model) []string {
+	if m.statusSelected {
+		return nil
+	}
+	return []string{"-c", currentCommit(m).Hash}
 }
 
 func readNextEvent(reader *bufio.Reader, fd int, pending bool) (key, bool, error) {
@@ -672,15 +667,24 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 	view := rendered[top:end]
 
 	clearRenderArea(m.lastRenderRows)
+	statusStart := len(rendered) - len(m.statusLines)
 	for i, line := range view {
 		absoluteLine := top + i
 		lineEnd := "\r\n"
 		if i == len(view)-1 {
 			lineEnd = ""
 		}
-		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, absoluteLine == selectedLine && highlightSelection, m.selectionStyle), lineEnd)
+		selected := renderedLineSelected(m, absoluteLine, selectedLine, statusStart)
+		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, selected && highlightSelection, m.selectionStyle), lineEnd)
 	}
 	return usedRows, top
+}
+
+func renderedLineSelected(m *model, line, selectedLine, statusStart int) bool {
+	if m.statusSelected {
+		return line >= statusStart
+	}
+	return line == selectedLine
 }
 
 func adjustViewportTop(top, selectedLine int, lineRows []int, maxHeight int, preserveViewport bool) int {
@@ -746,7 +750,7 @@ func buildRenderedLinesWithPending(m *model, showPendingPhab bool) ([]smartlogLi
 	if len(m.statusLines) > 0 {
 		rendered = append(rendered, smartlogLine{})
 		if m.statusSelected {
-			selectedLine = len(rendered) + m.statusLine
+			selectedLine = len(rendered)
 		}
 		rendered = append(rendered, m.statusLines...)
 	}
@@ -785,7 +789,6 @@ func appendPhabStatus(line smartlogLine, c commit, m *model, showPending bool) s
 
 func refreshModel(m *model) error {
 	statusSelected := m.statusSelected
-	statusLine := m.statusLine
 	clearRenderArea(m.lastRenderRows)
 	m.lastRenderRows = 0
 
@@ -807,7 +810,6 @@ func refreshModel(m *model) error {
 		m.selected = 0
 		m.selectedHash = ""
 		m.statusSelected = false
-		m.statusLine = 0
 		return nil
 	}
 
@@ -844,11 +846,6 @@ func refreshModel(m *model) error {
 	m.selectedHash = commits[selected].Hash
 	m.expanded = newExpanded
 	m.statusSelected = statusSelected && len(statusLines) > 0
-	if m.statusSelected {
-		m.statusLine = min(statusLine, len(statusLines)-1)
-	} else {
-		m.statusLine = 0
-	}
 	startPhabStatusFetches(m)
 	return nil
 }

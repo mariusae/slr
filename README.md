@@ -13,12 +13,12 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - Inline smartlog view using Sapling's own graph output
 - Working-copy status from `sl status` at the bottom of the view
 - Kaleidoscope links beside diffs when run in fbsource
-- `Up` / `Down` to move between draft commits and working-copy status lines
+- `Up` / `Down` to move between draft commits and the working-copy status block
 - `Enter` to `sl goto` the selected commit and exit
 - `Space` to expand the selected commit description
 - Expanded descriptions rendered as markdown via `github.com/mariusae/md`
 - `Ctrl-G` to run `sl metaedit -r <hash>`
-- `Ctrl-D` to run `mdiff -c <hash>`
+- `Ctrl-D` to run `mdiff -c <hash>` for a commit or `mdiff` for the working copy
 - `Ctrl-R` to refresh the smartlog view
 - `q` or `Esc` to exit while leaving the rendered content on screen
 

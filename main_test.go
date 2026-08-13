@@ -346,7 +346,7 @@ func TestBuildRenderedLinesDoesNotAppendSeparatorForCleanStatus(t *testing.T) {
 	}
 }
 
-func TestStatusLinesAreSelectableWithArrowNavigation(t *testing.T) {
+func TestStatusBlockIsSelectableWithArrowNavigation(t *testing.T) {
 	m := &model{
 		statusLines:  makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
 		commits:      []commit{{Hash: "aaaaaaaaaa"}, {Hash: "bbbbbbbbbb"}},
@@ -355,33 +355,59 @@ func TestStatusLinesAreSelectableWithArrowNavigation(t *testing.T) {
 	}
 
 	moveSelectionDown(m)
-	if !m.statusSelected || m.statusLine != 0 {
-		t.Fatalf("first Down selected status=%v line=%d", m.statusSelected, m.statusLine)
+	if !m.statusSelected {
+		t.Fatal("Down did not select status block")
 	}
 	moveSelectionDown(m)
-	if !m.statusSelected || m.statusLine != 1 {
-		t.Fatalf("second Down selected status=%v line=%d", m.statusSelected, m.statusLine)
+	if !m.statusSelected {
+		t.Fatal("second Down left status block")
 	}
-	moveSelectionUp(m)
 	moveSelectionUp(m)
 	if m.statusSelected || m.selected != 1 {
 		t.Fatalf("Up returned status=%v commit=%d", m.statusSelected, m.selected)
 	}
 }
 
-func TestBuildRenderedLinesSelectsStatusLine(t *testing.T) {
+func TestBuildRenderedLinesSelectsStatusBlockStart(t *testing.T) {
 	m := &model{
 		lines:          makeSmartlogLines([]string{"@  aaaaaaaaaa  now"}),
 		statusLines:    makeSmartlogLines([]string{"M main.go", "? notes.txt"}),
 		commits:        []commit{{Hash: "aaaaaaaaaa", HeaderLine: 0, AnchorLine: 0}},
 		expanded:       map[string]bool{},
 		statusSelected: true,
-		statusLine:     1,
 	}
 
 	_, selectedLine := buildRenderedLines(m)
-	if selectedLine != 3 {
-		t.Fatalf("selected line = %d, want 3", selectedLine)
+	if selectedLine != 2 {
+		t.Fatalf("selected line = %d, want 2", selectedLine)
+	}
+}
+
+func TestRenderedLineSelectedIncludesEntireStatusBlock(t *testing.T) {
+	m := &model{statusSelected: true}
+	if renderedLineSelected(m, 1, 2, 2) {
+		t.Fatal("separator before status block was selected")
+	}
+	if !renderedLineSelected(m, 2, 2, 2) || !renderedLineSelected(m, 3, 2, 2) {
+		t.Fatal("not every status line was selected")
+	}
+}
+
+func TestMdiffArgsUsesWorkingCopyForStatusBlock(t *testing.T) {
+	m := &model{
+		commits:        []commit{{Hash: "aaaaaaaaaa"}},
+		statusSelected: true,
+	}
+	if got := mdiffArgs(m); got != nil {
+		t.Fatalf("got %#v, want no arguments", got)
+	}
+}
+
+func TestMdiffArgsUsesCommitForCommitSelection(t *testing.T) {
+	m := &model{commits: []commit{{Hash: "aaaaaaaaaa"}}}
+	want := []string{"-c", "aaaaaaaaaa"}
+	if got := mdiffArgs(m); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
 
