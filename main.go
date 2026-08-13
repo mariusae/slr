@@ -652,7 +652,11 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 		lineRows[i] = displayRows(line.plain, termWidth)
 	}
 
-	top = adjustViewportTop(top, selectedLine, lineRows, maxHeight, preserveViewport)
+	selectedEnd := selectedLine + 1
+	if m.statusSelected {
+		selectedEnd = len(rendered)
+	}
+	top = adjustViewportTop(top, selectedLine, selectedEnd, lineRows, maxHeight, preserveViewport)
 
 	end := top
 	usedRows := 0
@@ -687,7 +691,7 @@ func renderedLineSelected(m *model, line, selectedLine, statusStart int) bool {
 	return line == selectedLine
 }
 
-func adjustViewportTop(top, selectedLine int, lineRows []int, maxHeight int, preserveViewport bool) int {
+func adjustViewportTop(top, selectedStart, selectedEnd int, lineRows []int, maxHeight int, preserveViewport bool) int {
 	if top < 0 {
 		top = 0
 	}
@@ -708,10 +712,10 @@ func adjustViewportTop(top, selectedLine int, lineRows []int, maxHeight int, pre
 	if preserveViewport {
 		return top
 	}
-	if selectedLine < top {
-		top = selectedLine
+	if selectedStart < top {
+		top = selectedStart
 	}
-	for visibleRowsBetween(lineRows, top, selectedLine+1) > maxHeight {
+	for top < selectedEnd-1 && visibleRowsBetween(lineRows, top, selectedEnd) > maxHeight {
 		top++
 	}
 	return top
