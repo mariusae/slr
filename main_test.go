@@ -456,10 +456,10 @@ func TestBuildRenderedLinesAddsKaleidoscopeLinkForDiff(t *testing.T) {
 	}
 
 	got, _ := buildRenderedLines(m)
-	if got[0].plain != "@  d515a67992  now  D123  ▤ksdiff" {
+	if got[0].plain != "@  d515a67992  now  D123  ksdiff" {
 		t.Fatalf("got plain line %q", got[0].plain)
 	}
-	wantLink := "\x1b]8;;ksdiff://" + fullHash + "\x1b\\▤ksdiff\x1b]8;;\x1b\\"
+	wantLink := "\x1b]8;;ksdiff://" + fullHash + "\x1b\\\x1b[1mksdiff\x1b[22m\x1b]8;;\x1b\\"
 	if !strings.Contains(got[0].raw, wantLink) {
 		t.Fatalf("raw line %q does not contain %q", got[0].raw, wantLink)
 	}

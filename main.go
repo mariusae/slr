@@ -762,9 +762,9 @@ func appendKaleidoscopeLink(line smartlogLine, c commit) smartlogLine {
 	if c.FullHash == "" {
 		return line
 	}
-	label := "▤ksdiff"
+	label := "ksdiff"
 	return smartlogLine{
-		raw:   line.raw + "  \x1b]8;;ksdiff://" + c.FullHash + "\x1b\\" + label + "\x1b]8;;\x1b\\",
+		raw:   line.raw + "  \x1b]8;;ksdiff://" + c.FullHash + "\x1b\\\x1b[1m" + label + "\x1b[22m\x1b]8;;\x1b\\",
 		plain: line.plain + "  " + label,
 	}
 }
