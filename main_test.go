@@ -444,6 +444,57 @@ func TestBuildRenderedLinesDoesNotAppendSeparatorForCleanStatus(t *testing.T) {
 	}
 }
 
+func TestChangedRenderedLineIndicesMarksModifiedAndInsertedLines(t *testing.T) {
+	before := makeSmartlogLines([]string{"status", "", "commit one", "commit two"})
+	after := makeSmartlogLines([]string{"new status", "", "commit one", "new commit", "commit two"})
+
+	got := changedRenderedLineIndices(before, after)
+	want := map[int]bool{0: true, 3: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestChangedRenderedLineIndicesMarksDeletionBoundary(t *testing.T) {
+	before := makeSmartlogLines([]string{"status", "deleted", "commit"})
+	after := makeSmartlogLines([]string{"status", "commit"})
+
+	got := changedRenderedLineIndices(before, after)
+	want := map[int]bool{1: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestChangedRenderedLineRangeUsesCommonPrefixAndSuffix(t *testing.T) {
+	before := makeSmartlogLines([]string{"same", "old one", "old two", "tail"})
+	after := makeSmartlogLines([]string{"same", "new one", "new two", "tail"})
+
+	got := changedRenderedLineRange(before, after)
+	want := map[int]bool{1: true, 2: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestCurrentFlashStyleExpires(t *testing.T) {
+	started := time.Now()
+	m := &model{
+		flashLines:   map[int]bool{1: true},
+		flashStarted: started,
+	}
+
+	if _, active := currentFlashStyle(m, started); !active {
+		t.Fatal("flash was not active when it started")
+	}
+	if _, active := currentFlashStyle(m, started.Add(flashDuration)); active {
+		t.Fatal("flash remained active after its duration")
+	}
+	if m.flashLines != nil {
+		t.Fatal("expired flash lines were not cleared")
+	}
+}
+
 func TestStatusBlockIsSelectableWithArrowNavigation(t *testing.T) {
 	m := &model{
 		statusLines:  makeSmartlogLines([]string{"M main.go", "? notes.txt"}),

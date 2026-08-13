@@ -23,6 +23,7 @@ import (
 )
 
 const revset = "draft() & ((::.) + (.::))"
+const flashDuration = 1500 * time.Millisecond
 
 var headerRe = regexp.MustCompile(`^([ \t│╷╵╶╴─├└┌┐┘╭╮╯╰~]*)?([@ox])\s{2}([0-9a-f]{10,40})(?:\s+.*)?$`)
 var diffIDRe = regexp.MustCompile(`\bD[0-9]+\b`)
@@ -55,21 +56,25 @@ type smartlogLine struct {
 }
 
 type model struct {
-	lines          []smartlogLine
-	statusLines    []smartlogLine
-	commits        []commit
-	selected       int
-	statusSelected bool
-	expanded       map[string]bool
-	selectedHash   string
-	lastRenderRows int
-	selectionStyle lineStyle
-	markdownStyle  md.RenderStyle
-	phabStatuses   map[string]string
-	phabPending    map[string]bool
-	phabResults    chan phabStatusResult
-	progressFrame  int
-	kaleidoscope   bool
+	lines             []smartlogLine
+	statusLines       []smartlogLine
+	commits           []commit
+	selected          int
+	statusSelected    bool
+	expanded          map[string]bool
+	selectedHash      string
+	lastRenderRows    int
+	selectionStyle    lineStyle
+	flashBackground   rgb
+	flashBackgroundOK bool
+	flashLines        map[int]bool
+	flashStarted      time.Time
+	markdownStyle     md.RenderStyle
+	phabStatuses      map[string]string
+	phabPending       map[string]bool
+	phabResults       chan phabStatusResult
+	progressFrame     int
+	kaleidoscope      bool
 }
 
 type key int
@@ -192,7 +197,8 @@ func runInteractive(m *model) error {
 	defer showCursor()
 
 	reader := bufio.NewReader(os.Stdin)
-	m.selectionStyle = detectSelectionStyle()
+	m.flashBackground, m.flashBackgroundOK = queryTerminalBackground()
+	m.selectionStyle = selectionStyleForBackground(m.flashBackground, m.flashBackgroundOK)
 	m.markdownStyle = detectMarkdownStyle()
 	top := 0
 	observer := startRepositoryObserver()
@@ -608,6 +614,10 @@ func fetchRepositoryView() ([]string, []string, error) {
 }
 
 func fetchRepositoryViewWithProgress(label string) ([]string, []string, error) {
+	return fetchRepositoryViewWithProgressMode(label, false)
+}
+
+func fetchRepositoryViewWithProgressMode(label string, preserveView bool) ([]string, []string, error) {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fetchRepositoryView()
 	}
@@ -622,11 +632,17 @@ func fetchRepositoryViewWithProgress(label string) ([]string, []string, error) {
 	defer ticker.Stop()
 
 	frame := 0
+	if preserveView {
+		fmt.Fprint(os.Stdout, "\r\n")
+	}
 	renderProgressFrame(label, frame)
 	for {
 		select {
 		case result := <-results:
 			clearProgressFrame()
+			if preserveView {
+				fmt.Fprint(os.Stdout, "\x1b[1A\r")
+			}
 			return result.lines, result.statusLines, result.err
 		case <-ticker.C:
 			frame++
@@ -779,6 +795,7 @@ func currentCommit(m *model) *commit {
 }
 
 func toggleExpanded(m *model) error {
+	m.flashLines = nil
 	c := currentCommit(m)
 	if m.expanded[c.Hash] {
 		delete(m.expanded, c.Hash)
@@ -873,11 +890,13 @@ func render(m *model, top int) (int, int) {
 
 func renderWithoutSelection(m *model, top int) (int, int) {
 	processPhabStatusResults(m)
+	m.flashLines = nil
 	return renderWithSelection(m, top, false, true, false)
 }
 
 func renderWithSelection(m *model, top int, highlightSelection bool, preserveViewport bool, showPendingPhab bool) (int, int) {
 	rendered, selectedLine := buildRenderedLinesWithPending(m, showPendingPhab)
+	flashStyle, flashActive := currentFlashStyle(m, time.Now())
 	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || termHeight <= 0 {
 		termHeight = 24
@@ -925,7 +944,12 @@ func renderWithSelection(m *model, top int, highlightSelection bool, preserveVie
 			lineEnd = ""
 		}
 		selected := renderedLineSelected(m, absoluteLine, selectedLine, statusStart)
-		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, selected && highlightSelection, m.selectionStyle), lineEnd)
+		style := m.selectionStyle
+		flashing := flashActive && m.flashLines[absoluteLine]
+		if flashing {
+			style = flashStyle
+		}
+		fmt.Fprintf(os.Stdout, "\r%s%s", formatRenderedLine(line.raw, (selected && highlightSelection) || flashing, style), lineEnd)
 	}
 	return usedRows, top
 }
@@ -1038,10 +1062,9 @@ func appendPhabStatus(line smartlogLine, c commit, m *model, showPending bool) s
 
 func refreshModel(m *model) error {
 	statusSelected := m.statusSelected
-	clearRenderArea(m.lastRenderRows)
-	m.lastRenderRows = 0
+	before, _ := buildRenderedLinesWithPending(m, false)
 
-	rawLines, rawStatusLines, err := fetchRepositoryViewWithProgress("refreshing")
+	rawLines, rawStatusLines, err := fetchRepositoryViewWithProgressMode("refreshing", m.lastRenderRows > 0)
 	if err != nil {
 		return err
 	}
@@ -1059,6 +1082,7 @@ func refreshModel(m *model) error {
 		m.selected = 0
 		m.selectedHash = ""
 		m.statusSelected = false
+		startChangedLineFlash(m, before)
 		return nil
 	}
 
@@ -1096,7 +1120,82 @@ func refreshModel(m *model) error {
 	m.expanded = newExpanded
 	m.statusSelected = statusSelected && len(statusLines) > 0
 	startPhabStatusFetches(m)
+	startChangedLineFlash(m, before)
 	return nil
+}
+
+func startChangedLineFlash(m *model, before []smartlogLine) {
+	after, _ := buildRenderedLinesWithPending(m, false)
+	m.flashLines = changedRenderedLineIndices(before, after)
+	if len(m.flashLines) > 0 {
+		m.flashStarted = time.Now()
+	}
+}
+
+func changedRenderedLineIndices(before, after []smartlogLine) map[int]bool {
+	n := len(before)
+	m := len(after)
+	if n > 0 && m > 1_000_000/n {
+		return changedRenderedLineRange(before, after)
+	}
+	lcs := make([][]int, n+1)
+	for i := range lcs {
+		lcs[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if before[i].plain == after[j].plain {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+
+	changed := map[int]bool{}
+	i, j := 0, 0
+	for i < n && j < m {
+		if before[i].plain == after[j].plain {
+			i++
+			j++
+			continue
+		}
+		if lcs[i+1][j] >= lcs[i][j+1] {
+			changed[j] = true
+			i++
+		} else {
+			changed[j] = true
+			j++
+		}
+	}
+	for ; j < m; j++ {
+		changed[j] = true
+	}
+	if i < n && m > 0 {
+		changed[m-1] = true
+	}
+	return changed
+}
+
+func changedRenderedLineRange(before, after []smartlogLine) map[int]bool {
+	prefix := 0
+	for prefix < len(before) && prefix < len(after) && before[prefix].plain == after[prefix].plain {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(before)-prefix && suffix < len(after)-prefix &&
+		before[len(before)-1-suffix].plain == after[len(after)-1-suffix].plain {
+		suffix++
+	}
+
+	changed := map[int]bool{}
+	for i := prefix; i < len(after)-suffix; i++ {
+		changed[i] = true
+	}
+	if len(changed) == 0 && prefix < len(before) && len(after) > 0 {
+		changed[min(prefix, len(after)-1)] = true
+	}
+	return changed
 }
 
 func isFBSource() bool {
@@ -1586,8 +1685,7 @@ func expansionRenderWidth(c commit) int {
 	return width
 }
 
-func detectSelectionStyle() lineStyle {
-	bg, ok := queryTerminalBackground()
+func selectionStyleForBackground(bg rgb, ok bool) lineStyle {
 	if !ok {
 		return lineStyle{}
 	}
@@ -1604,6 +1702,37 @@ func detectSelectionStyle() lineStyle {
 		start: fmt.Sprintf("\x1b[48;2;%d;%d;%dm\x1b[1m", tint.r, tint.g, tint.b),
 		end:   "\x1b[0m",
 	}
+}
+
+func currentFlashStyle(m *model, now time.Time) (lineStyle, bool) {
+	if len(m.flashLines) == 0 {
+		return lineStyle{}, false
+	}
+	elapsed := now.Sub(m.flashStarted)
+	if elapsed < 0 || elapsed >= flashDuration {
+		m.flashLines = nil
+		return lineStyle{}, false
+	}
+
+	progress := float64(elapsed) / float64(flashDuration)
+	pulse := 0.5 + 0.5*math.Sin(2*math.Pi*elapsed.Seconds()/0.45)
+	intensity := pulse * (1 - progress)
+	if !m.flashBackgroundOK {
+		if intensity < 0.25 {
+			return lineStyle{}, false
+		}
+		return lineStyle{start: "\x1b[7m\x1b[1m", end: "\x1b[0m"}, true
+	}
+
+	overlay := rgb{255, 190, 60}
+	if luminance(m.flashBackground) > 128.0 {
+		overlay = rgb{180, 95, 0}
+	}
+	tint := blend(m.flashBackground, overlay, 0.32*intensity)
+	return lineStyle{
+		start: fmt.Sprintf("\x1b[48;2;%d;%d;%dm\x1b[1m", tint.r, tint.g, tint.b),
+		end:   "\x1b[0m",
+	}, true
 }
 
 func detectMarkdownStyle() md.RenderStyle {

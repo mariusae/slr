@@ -13,6 +13,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - Inline smartlog view using Sapling's own graph output
 - Working-copy status from `sl status` at the top of the view
 - Automatic refresh after repository changes, using Watchman when available
+- Brief pulsing highlights on lines changed by a refresh
 - Kaleidoscope links beside diffs when run in fbsource
 - `Up` / `Down` to move between draft commits and the working-copy status block
 - `Enter` to `sl goto` the selected commit and exit
