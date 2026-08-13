@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +110,17 @@ type phabStatusResult struct {
 	err    error
 }
 
+type repositoryObserver struct {
+	changes <-chan struct{}
+	close   func()
+	retry   func()
+}
+
+type watchProjectResponse struct {
+	Watch        string `json:"watch"`
+	RelativePath string `json:"relative_path"`
+}
+
 func main() {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		if err := printPlainView(); err != nil {
@@ -183,14 +195,23 @@ func runInteractive(m *model) error {
 	m.selectionStyle = detectSelectionStyle()
 	m.markdownStyle = detectMarkdownStyle()
 	top := 0
+	observer := startRepositoryObserver()
+	defer observer.close()
 
 	for {
+		if consumeRepositoryChange(observer.changes) {
+			if err := refreshModel(m); err != nil {
+				observer.retry()
+			} else {
+				top = 0
+			}
+		}
 		processPhabStatusResults(m)
 		rows, nextTop := render(m, top)
 		m.lastRenderRows = rows
 		top = nextTop
 
-		k, ok, err := readNextEvent(reader, fd, hasPendingPhabStatus(m))
+		k, ok, err := readNextEvent(reader, fd, hasPendingPhabStatus(m) || observer.changes != nil)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				renderWithoutSelection(m, top)
@@ -311,6 +332,229 @@ func readNextEvent(reader *bufio.Reader, fd int, pending bool) (key, bool, error
 	}
 	k, err := readKey(reader, fd)
 	return k, true, err
+}
+
+func startRepositoryObserver() *repositoryObserver {
+	ctx, cancel := context.WithCancel(context.Background())
+	rawChanges := make(chan struct{}, 1)
+	changes := make(chan struct{}, 1)
+	go func() {
+		stop, err := startWatchmanSubscription(rawChanges)
+		if err != nil {
+			return
+		}
+		<-ctx.Done()
+		stop()
+	}()
+
+	go monitorRepositoryChanges(ctx, rawChanges, changes, repositoryFingerprint, 200*time.Millisecond, 2*time.Second)
+	return &repositoryObserver{
+		changes: changes,
+		close:   cancel,
+		retry: func() {
+			time.AfterFunc(time.Second, func() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					signalRepositoryChange(rawChanges)
+				}
+			})
+		},
+	}
+}
+
+func startWatchmanSubscription(changes chan<- struct{}) (func(), error) {
+	rootOut, err := exec.Command("sl", "root").Output()
+	if err != nil {
+		return nil, err
+	}
+	root := strings.TrimSpace(string(rootOut))
+	projectOut, err := exec.Command("watchman", "--no-pretty", "watch-project", root).Output()
+	if err != nil {
+		return nil, err
+	}
+	var project watchProjectResponse
+	if err := json.Unmarshal(projectOut, &project); err != nil {
+		return nil, err
+	}
+	if project.Watch == "" {
+		return nil, errors.New("watchman returned an empty watch root")
+	}
+
+	cmd := exec.Command(
+		"watchman",
+		"--no-pretty",
+		"-j",
+		"-p",
+		"--server-encoding=json",
+		"--output-encoding=json",
+	)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		return nil, err
+	}
+
+	query := map[string]any{
+		"expression": []any{"anyof",
+			[]any{"type", "f"},
+			[]any{"type", "l"},
+			[]any{"not", []any{"exists"}},
+		},
+		"fields":                  []string{"name"},
+		"empty_on_fresh_instance": true,
+	}
+	if project.RelativePath != "" {
+		query["relative_root"] = project.RelativePath
+	}
+	subscription := fmt.Sprintf("slr-%d", os.Getpid())
+	if err := json.NewEncoder(stdin).Encode([]any{"subscribe", project.Watch, subscription, query}); err != nil {
+		stdin.Close()
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, err
+	}
+
+	go func() {
+		defer cmd.Wait()
+		decoder := json.NewDecoder(stdout)
+		for {
+			var event map[string]any
+			if err := decoder.Decode(&event); err != nil {
+				return
+			}
+			if event["subscription"] != subscription {
+				continue
+			}
+			files, _ := event["files"].([]any)
+			if len(files) == 0 {
+				continue
+			}
+			signalRepositoryChange(changes)
+		}
+	}()
+
+	return func() {
+		stdin.Close()
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}, nil
+}
+
+func monitorRepositoryChanges(
+	ctx context.Context,
+	rawChanges <-chan struct{},
+	changes chan<- struct{},
+	fingerprint func() (string, error),
+	debounceDelay time.Duration,
+	pollInterval time.Duration,
+) {
+	lastFingerprint, _ := fingerprint()
+	pollTicker := time.NewTicker(pollInterval)
+	defer pollTicker.Stop()
+
+	var debounceTimer *time.Timer
+	var debounce <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			return
+		case <-rawChanges:
+			if debounceTimer == nil {
+				debounceTimer = time.NewTimer(debounceDelay)
+			} else {
+				if !debounceTimer.Stop() {
+					select {
+					case <-debounceTimer.C:
+					default:
+					}
+				}
+				debounceTimer.Reset(debounceDelay)
+			}
+			debounce = debounceTimer.C
+		case <-debounce:
+			if current, err := fingerprint(); err == nil {
+				lastFingerprint = current
+			}
+			signalRepositoryChange(changes)
+			debounce = nil
+		case <-pollTicker.C:
+			current, err := fingerprint()
+			if err != nil {
+				continue
+			}
+			if lastFingerprint == "" {
+				lastFingerprint = current
+				continue
+			}
+			if current != lastFingerprint {
+				lastFingerprint = current
+				signalRepositoryChange(changes)
+			}
+		}
+	}
+}
+
+func repositoryFingerprint() (string, error) {
+	status, err := exec.Command("sl", "--pager=off", "status").Output()
+	if err != nil {
+		return "", err
+	}
+	log, err := exec.Command(
+		"sl",
+		"log",
+		"-r",
+		revset,
+		"-T",
+		"{node}\\0{desc}\\0{bookmarks}\\0{remotenames}\\n",
+	).Output()
+	if err != nil {
+		return "", err
+	}
+	current, err := exec.Command("sl", "log", "-r", ".", "-T", "{node}\\n").Output()
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	digest.Write(status)
+	digest.Write([]byte{0})
+	digest.Write(log)
+	digest.Write([]byte{0})
+	digest.Write(current)
+	return fmt.Sprintf("%x", digest.Sum(nil)), nil
+}
+
+func signalRepositoryChange(changes chan<- struct{}) {
+	select {
+	case changes <- struct{}{}:
+	default:
+	}
+}
+
+func consumeRepositoryChange(changes <-chan struct{}) bool {
+	changed := false
+	for {
+		select {
+		case <-changes:
+			changed = true
+		default:
+			return changed
+		}
+	}
 }
 
 func fetchSmartlog() ([]string, error) {

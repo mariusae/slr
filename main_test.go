@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -242,6 +244,80 @@ func TestWaitForInputRetriesInterruptedSystemCall(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("got %d select calls, want 2", calls)
+	}
+}
+
+func TestMonitorRepositoryChangesDebouncesWatchmanEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rawChanges := make(chan struct{}, 2)
+	changes := make(chan struct{}, 1)
+	fingerprintCalls := 0
+	fingerprint := func() (string, error) {
+		fingerprintCalls++
+		return "unchanged", nil
+	}
+
+	go monitorRepositoryChanges(ctx, rawChanges, changes, fingerprint, 10*time.Millisecond, time.Hour)
+	rawChanges <- struct{}{}
+	rawChanges <- struct{}{}
+
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for repository change")
+	}
+	select {
+	case <-changes:
+		t.Fatal("watchman burst produced more than one change")
+	case <-time.After(30 * time.Millisecond):
+	}
+	if fingerprintCalls != 2 {
+		t.Fatalf("fingerprint called %d times, want 2", fingerprintCalls)
+	}
+}
+
+func TestConsumeRepositoryChangeCoalescesSignals(t *testing.T) {
+	changes := make(chan struct{}, 3)
+	changes <- struct{}{}
+	changes <- struct{}{}
+	changes <- struct{}{}
+
+	if !consumeRepositoryChange(changes) {
+		t.Fatal("did not consume repository changes")
+	}
+	if consumeRepositoryChange(changes) {
+		t.Fatal("repository changes were not drained")
+	}
+}
+
+func TestMonitorRepositoryChangesPollsSaplingState(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rawChanges := make(chan struct{})
+	changes := make(chan struct{}, 1)
+	var state atomic.Int32
+	state.Store(1)
+	initialized := make(chan struct{}, 1)
+	fingerprint := func() (string, error) {
+		select {
+		case initialized <- struct{}{}:
+		default:
+		}
+		if state.Load() == 1 {
+			return "one", nil
+		}
+		return "two", nil
+	}
+
+	go monitorRepositoryChanges(ctx, rawChanges, changes, fingerprint, time.Hour, 10*time.Millisecond)
+	<-initialized
+	state.Store(2)
+
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for polled repository change")
 	}
 }
 

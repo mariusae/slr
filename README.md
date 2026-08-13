@@ -12,6 +12,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 
 - Inline smartlog view using Sapling's own graph output
 - Working-copy status from `sl status` at the top of the view
+- Automatic refresh after repository changes, using Watchman when available
 - Kaleidoscope links beside diffs when run in fbsource
 - `Up` / `Down` to move between draft commits and the working-copy status block
 - `Enter` to `sl goto` the selected commit and exit
@@ -48,3 +49,4 @@ sl sl -r 'draft() & ((::.) + (.::))'
 - Smartlog capture runs under `script` with `--pager=off` so Sapling still emits terminal formatting and OSC links without blocking on a pager.
 - Selection highlighting uses a tinted background derived from the terminal's default background when available.
 - Expanded markdown is wrapped to at most 100 columns, minus the smartlog graph prefix.
+- Repository changes are debounced, with a periodic Sapling-state check covering metadata-only changes and environments without Watchman.
