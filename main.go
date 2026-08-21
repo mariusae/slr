@@ -89,8 +89,26 @@ const (
 	keyCtrlD
 	keyCtrlR
 	keyEscape
+	keyHelp
 	keyQuit
 )
+
+type keyBinding struct {
+	keys        string
+	description string
+}
+
+var keyBindings = []keyBinding{
+	{keys: "Up / Down", description: "Move selection"},
+	{keys: "Enter", description: "Go to selected commit"},
+	{keys: "Space", description: "Toggle commit description"},
+	{keys: "Ctrl-G", description: "Edit selected commit"},
+	{keys: "Ctrl-D", description: "Open selected diff"},
+	{keys: "Ctrl-R", description: "Refresh"},
+	{keys: "?", description: "Toggle keybinding help"},
+	{keys: "Esc", description: "Close help, or quit"},
+	{keys: "q", description: "Quit"},
+}
 
 type rgb struct {
 	r int
@@ -203,6 +221,7 @@ func runInteractive(m *model) error {
 	top := 0
 	observer := startRepositoryObserver()
 	defer observer.close()
+	helpVisible := false
 
 	for {
 		if consumeRepositoryChange(observer.changes) {
@@ -213,7 +232,12 @@ func runInteractive(m *model) error {
 			}
 		}
 		processPhabStatusResults(m)
-		rows, nextTop := render(m, top)
+		rows, nextTop := 0, top
+		if helpVisible {
+			rows = renderHelpPopup(m.lastRenderRows)
+		} else {
+			rows, nextTop = render(m, top)
+		}
 		m.lastRenderRows = rows
 		top = nextTop
 
@@ -228,6 +252,16 @@ func runInteractive(m *model) error {
 		}
 		if !ok {
 			m.progressFrame++
+			continue
+		}
+		if helpVisible {
+			switch k {
+			case keyHelp, keyEscape:
+				helpVisible = false
+			case keyQuit:
+				renderWithoutSelection(m, top)
+				return nil
+			}
 			continue
 		}
 
@@ -273,6 +307,8 @@ func runInteractive(m *model) error {
 				return err
 			}
 			top = 0
+		case keyHelp:
+			helpVisible = true
 		case keyEnter:
 			if m.statusSelected {
 				break
@@ -894,6 +930,66 @@ func renderWithoutSelection(m *model, top int) (int, int) {
 	return renderWithSelection(m, top, false, true, false)
 }
 
+func renderHelpPopup(previousRows int) int {
+	termWidth, termHeight, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || termWidth <= 0 {
+		termWidth = 80
+	}
+	if err != nil || termHeight <= 0 {
+		termHeight = 24
+	}
+
+	lines := buildHelpPopup(termWidth)
+	topPadding := max(0, (termHeight-1-len(lines))/2)
+	clearRenderArea(previousRows)
+	for i := 0; i < topPadding; i++ {
+		fmt.Fprint(os.Stdout, "\r\n")
+	}
+	for i, line := range lines {
+		leftPadding := max(0, (termWidth-displayWidth(line))/2)
+		lineEnd := "\r\n"
+		if i == len(lines)-1 {
+			lineEnd = ""
+		}
+		fmt.Fprintf(os.Stdout, "\r%s%s%s", strings.Repeat(" ", leftPadding), line, lineEnd)
+	}
+	return topPadding + len(lines)
+}
+
+func buildHelpPopup(maxWidth int) []string {
+	keyWidth := 0
+	for _, binding := range keyBindings {
+		keyWidth = max(keyWidth, displayWidth(binding.keys))
+	}
+	contentWidth := displayWidth("Keybindings")
+	for _, binding := range keyBindings {
+		contentWidth = max(contentWidth, keyWidth+2+displayWidth(binding.description))
+	}
+	if maxWidth > 0 {
+		contentWidth = min(contentWidth, max(1, maxWidth-4))
+	}
+
+	border := "+" + strings.Repeat("-", contentWidth+2) + "+"
+	lines := []string{
+		border,
+		"| " + padOrTrim("Keybindings", contentWidth) + " |",
+		"| " + strings.Repeat(" ", contentWidth) + " |",
+	}
+	for _, binding := range keyBindings {
+		text := fmt.Sprintf("%-*s  %s", keyWidth, binding.keys, binding.description)
+		lines = append(lines, "| "+padOrTrim(text, contentWidth)+" |")
+	}
+	return append(lines, border)
+}
+
+func padOrTrim(text string, width int) string {
+	runes := []rune(text)
+	if len(runes) > width {
+		return string(runes[:width])
+	}
+	return text + strings.Repeat(" ", width-len(runes))
+}
+
 func renderWithSelection(m *model, top int, highlightSelection bool, preserveViewport bool, showPendingPhab bool) (int, int) {
 	rendered, selectedLine := buildRenderedLinesWithPending(m, showPendingPhab)
 	flashStyle, flashActive := currentFlashStyle(m, time.Now())
@@ -1406,6 +1502,8 @@ func readKey(reader *bufio.Reader, fd int) (key, error) {
 	switch b {
 	case 'q':
 		return keyQuit, nil
+	case '?':
+		return keyHelp, nil
 	case '\r', '\n':
 		return keyEnter, nil
 	case ' ':

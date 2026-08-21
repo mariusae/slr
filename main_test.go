@@ -212,6 +212,36 @@ func TestReadKeyMapsCtrlR(t *testing.T) {
 	}
 }
 
+func TestReadKeyMapsQuestionMarkToHelp(t *testing.T) {
+	got, err := readKey(bufio.NewReader(strings.NewReader("?")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != keyHelp {
+		t.Fatalf("got %v want %v", got, keyHelp)
+	}
+}
+
+func TestBuildHelpPopupIncludesEveryKeybinding(t *testing.T) {
+	popup := strings.Join(buildHelpPopup(80), "\n")
+	for _, binding := range keyBindings {
+		if !strings.Contains(popup, binding.keys) {
+			t.Errorf("popup does not contain keybinding %q", binding.keys)
+		}
+		if !strings.Contains(popup, binding.description) {
+			t.Errorf("popup does not contain description %q", binding.description)
+		}
+	}
+}
+
+func TestBuildHelpPopupFitsTerminalWidth(t *testing.T) {
+	for _, line := range buildHelpPopup(32) {
+		if got := displayWidth(line); got > 32 {
+			t.Fatalf("line width = %d, want <= 32: %q", got, line)
+		}
+	}
+}
+
 func TestMDiffArgsUsePagedMode(t *testing.T) {
 	got := mdiffArgs(&model{commits: []commit{{Hash: "abc123"}}})
 	want := []string{"-P", "-c", "abc123"}

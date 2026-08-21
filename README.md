@@ -22,7 +22,8 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - `Ctrl-G` to run `sl metaedit -r <hash>`
 - `Ctrl-D` to run paged `mdiff -P -c <hash>` for a commit or `mdiff -P` for the working copy
 - `Ctrl-R` to refresh the smartlog view
-- `q` or `Esc` to exit while leaving the rendered content on screen
+- `?` to display a popup with all available keybindings
+- `q` to exit; `Esc` closes the help popup when open and otherwise exits
 
 ## Build
 
