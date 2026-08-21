@@ -222,6 +222,16 @@ func TestReadKeyMapsQuestionMarkToHelp(t *testing.T) {
 	}
 }
 
+func TestReadKeyMapsGToGoto(t *testing.T) {
+	got, err := readKey(bufio.NewReader(strings.NewReader("g")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != keyGoto {
+		t.Fatalf("got %v want %v", got, keyGoto)
+	}
+}
+
 func TestBuildHelpPopupIncludesEveryKeybinding(t *testing.T) {
 	popup := strings.Join(buildHelpPopup(80), "\n")
 	for _, binding := range keyBindings {

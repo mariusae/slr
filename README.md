@@ -17,6 +17,7 @@ It preserves Sapling's smartlog rendering, including OSC hyperlinks, and adds li
 - Kaleidoscope links beside diffs when run in fbsource
 - `Up` / `Down` to move between draft commits and the working-copy status block
 - `Enter` to `sl goto` the selected commit and exit
+- `g` to `sl goto` the selected commit and keep `slr` open
 - `Space` to expand the selected commit description
 - Expanded descriptions rendered as markdown via `github.com/mariusae/md`
 - `Ctrl-G` to run `sl metaedit -r <hash>`

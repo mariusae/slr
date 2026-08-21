@@ -90,6 +90,7 @@ const (
 	keyCtrlR
 	keyEscape
 	keyHelp
+	keyGoto
 	keyQuit
 )
 
@@ -101,6 +102,7 @@ type keyBinding struct {
 var keyBindings = []keyBinding{
 	{keys: "Up / Down", description: "Move selection"},
 	{keys: "Enter", description: "Go to selected commit"},
+	{keys: "g", description: "Go to commit and keep SLR open"},
 	{keys: "Space", description: "Toggle commit description"},
 	{keys: "Ctrl-G", description: "Edit selected commit"},
 	{keys: "Ctrl-D", description: "Open selected diff"},
@@ -309,6 +311,17 @@ func runInteractive(m *model) error {
 			top = 0
 		case keyHelp:
 			helpVisible = true
+		case keyGoto:
+			if m.statusSelected {
+				break
+			}
+			if err := runQuiet("sl", "goto", currentCommit(m).Hash); err != nil {
+				return err
+			}
+			if err := refreshModel(m); err != nil {
+				return err
+			}
+			top = 0
 		case keyEnter:
 			if m.statusSelected {
 				break
@@ -1504,6 +1517,8 @@ func readKey(reader *bufio.Reader, fd int) (key, error) {
 		return keyQuit, nil
 	case '?':
 		return keyHelp, nil
+	case 'g':
+		return keyGoto, nil
 	case '\r', '\n':
 		return keyEnter, nil
 	case ' ':
